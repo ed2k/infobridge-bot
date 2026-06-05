@@ -22,33 +22,47 @@ def get_font(size):
                 pass
     return ImageFont.load_default()
 
-def draw_card(draw, font, x, y, w, h, rank, suit, suit_color):
+def draw_card(img, draw, font, x, y, w, h, rank, suit, suit_color):
     # Draw card background (white round-rect)
-    draw.rounded_rectangle([x, y, x+w, y+h], radius=6, fill="white", outline="black", width=2)
+    draw.rounded_rectangle([x, y, x+w, y+h], radius=6, fill="white", outline="#e0e0e0", width=2)
     
     # Draw rank (e.g. A, K, Q, J, 10)
-    # Positioning offset based on font size
-    draw.text((x + 6, y + 4), rank, font=font, fill=suit_color)
+    # BBO standard: height 60 uses y+9, x+10 to align rank with crop offset. Height 80 uses y+4, x+6
+    y_offset = 9 if h == 60 else 4
+    x_offset = 10 if h == 60 else 6
+    draw.text((x + x_offset, y + y_offset), rank, font=font, fill=suit_color)
     
     # Draw suit shape in center
-    cx, cy = x + w//2, y + h//2 + 10
-    size = 12
-    if suit == "spade":
-        draw.polygon([(cx-3, cy+size), (cx+3, cy+size), (cx, cy+size//2)], fill=suit_color)
-        draw.ellipse([cx-size//2, cy, cx, cy+size//2], fill=suit_color)
-        draw.ellipse([cx, cy, cx+size//2, cy+size//2], fill=suit_color)
-        draw.polygon([(cx-size//2, cy+size//4), (cx+size//2, cy+size//4), (cx, cy-size//2)], fill=suit_color)
-    elif suit == "heart":
-        draw.ellipse([cx-size//2, cy-size//2, cx, cy], fill=suit_color)
-        draw.ellipse([cx, cy-size//2, cx+size//2, cy], fill=suit_color)
-        draw.polygon([(cx-size//2, cy-1), (cx+size//2, cy-1), (cx, cy+size//2+2)], fill=suit_color)
-    elif suit == "diamond":
-        draw.polygon([(cx, cy-size), (cx+size, cy), (cx, cy+size), (cx-size, cy)], fill=suit_color)
-    elif suit == "club":
-        draw.polygon([(cx-3, cy+size), (cx+3, cy+size), (cx, cy+size//2)], fill=suit_color)
-        draw.ellipse([cx-size//2-2, cy-size//4, cx-2, cy+size//4], fill=suit_color)
-        draw.ellipse([cx+2, cy-size//4, cx+size//2+2, cy+size//4], fill=suit_color)
-        draw.ellipse([cx-size//3, cy-size//2-2, cx+size//3, cy-size//4], fill=suit_color)
+    # BBO standard: height 60 uses y + h//2 + 13 (relative cy=43) to align with crop y=37..50
+    suit_y_offset = 13 if h == 60 else 10
+    cx, cy = x + w//2, y + h//2 + suit_y_offset
+    
+    template_path = f"templates/{suit}.png"
+    if os.path.exists(template_path):
+        from PIL import ImageOps
+        s_img = Image.open(template_path).convert("L")
+        color_fill = (255, 0, 0) if suit_color == "red" else (0, 0, 0)
+        colored_suit = Image.new("RGB", s_img.size, color=color_fill)
+        mask = ImageOps.invert(s_img)
+        img.paste(colored_suit, (cx - s_img.size[0]//2, cy - s_img.size[1]//2), mask=mask)
+    else:
+        size = 12
+        if suit == "spade":
+            draw.polygon([(cx-3, cy+size), (cx+3, cy+size), (cx, cy+size//2)], fill=suit_color)
+            draw.ellipse([cx-size//2, cy, cx, cy+size//2], fill=suit_color)
+            draw.ellipse([cx, cy, cx+size//2, cy+size//2], fill=suit_color)
+            draw.polygon([(cx-size//2, cy+size//4), (cx+size//2, cy+size//4), (cx, cy-size//2)], fill=suit_color)
+        elif suit == "heart":
+            draw.ellipse([cx-size//2, cy-size//2, cx, cy], fill=suit_color)
+            draw.ellipse([cx, cy-size//2, cx+size//2, cy], fill=suit_color)
+            draw.polygon([(cx-size//2, cy-1), (cx+size//2, cy-1), (cx, cy+size//2+2)], fill=suit_color)
+        elif suit == "diamond":
+            draw.polygon([(cx, cy-size), (cx+size, cy), (cx, cy+size), (cx-size, cy)], fill=suit_color)
+        elif suit == "club":
+            draw.polygon([(cx-3, cy+size), (cx+3, cy+size), (cx, cy+size//2)], fill=suit_color)
+            draw.ellipse([cx-size//2-2, cy-size//4, cx-2, cy+size//4], fill=suit_color)
+            draw.ellipse([cx+2, cy-size//4, cx+size//2+2, cy+size//4], fill=suit_color)
+            draw.ellipse([cx-size//3, cy-size//2-2, cx+size//3, cy-size//4], fill=suit_color)
 
 def main():
     # Load fonts
@@ -86,24 +100,78 @@ def main():
     draw.text((tx+15, ty+15), "TRICK AREA", font=section_font, fill="#90ee90")
     
     # Draw four cards played (North, East, South, West)
-    draw_card(draw, card_font, 470, 275, 55, 80, "A", "spade", "black")  # North
-    draw_card(draw, card_font, 470, 445, 55, 80, "10", "club", "black")  # South
-    draw_card(draw, card_font, 560, 360, 55, 80, "K", "heart", "red")    # East
-    draw_card(draw, card_font, 380, 360, 55, 80, "Q", "diamond", "red")  # West
+    draw_card(img, draw, card_font, 470, 275, 55, 80, "A", "spade", "black")  # North
+    draw_card(img, draw, card_font, 470, 445, 55, 80, "10", "club", "black")  # South
+    draw_card(img, draw, card_font, 560, 360, 55, 80, "K", "heart", "red")    # East
+    draw_card(img, draw, card_font, 380, 360, 55, 80, "Q", "diamond", "red")  # West
     
-    # 4. Draw Player Hand Area (x=300, y=600, w=500, h=120)
-    hx, hy, hw, hh = 300, 600, 500, 120
+    # 4. Draw Player Hand Area (x=300, y=600, w=500, h=60)
+    hx, hy, hw, hh = 300, 600, 500, 60
+    draw.text((hx+15, hy-25), "YOUR HAND", font=section_font, fill="#90ee90")
     draw.rectangle([hx, hy, hx+hw, hy+hh], fill="#163f24", outline="#226037", width=2)
-    draw.text((hx+15, hy+10), "YOUR HAND", font=section_font, fill="#90ee90")
     
-    # Draw some cards in the hand
-    draw_card(draw, hand_card_font, 340, 635, 45, 70, "A", "heart", "red")
-    draw_card(draw, hand_card_font, 395, 635, 45, 70, "J", "spade", "black")
-    draw_card(draw, hand_card_font, 450, 635, 45, 70, "10", "spade", "black")
-    draw_card(draw, hand_card_font, 505, 635, 45, 70, "9", "diamond", "red")
-    draw_card(draw, hand_card_font, 560, 635, 45, 70, "5", "club", "black")
-    draw_card(draw, hand_card_font, 615, 635, 45, 70, "3", "club", "black")
-    draw_card(draw, hand_card_font, 670, 635, 45, 70, "2", "heart", "red")
+    # Draw 13 starting hand cards
+    hand_cards = [
+        ("A", "spade", "black"),
+        ("K", "spade", "black"),
+        ("Q", "heart", "red"),
+        ("J", "heart", "red"),
+        ("10", "heart", "red"),
+        ("9", "diamond", "red"),
+        ("8", "diamond", "red"),
+        ("7", "diamond", "red"),
+        ("6", "club", "black"),
+        ("5", "club", "black"),
+        ("4", "club", "black"),
+        ("3", "spade", "black"),
+        ("2", "heart", "red")
+    ]
+    for i, (rank, suit, color) in enumerate(hand_cards):
+        cx = 320 + i * 32
+        draw_card(img, draw, hand_card_font, cx, 600, 45, 60, rank, suit, color)
+    
+    # 4.5 Draw Bidding Panel (x=750, y=350, w=400, h=115)
+    # This represents the active bidding buttons (levels 1-7, suits C, D, H, S, NT)
+    # placed on the right side of the table.
+    draw.rounded_rectangle([750, 350, 1150, 465], radius=8, fill="#2b2d31", outline="#3f4248", width=2)
+    
+    # Draw Level Buttons (1 to 7)
+    levels = ["1", "2", "3", "4", "5", "6", "7"]
+    for i, lvl in enumerate(levels):
+        cx = 836 + i * 38
+        cy = 380
+        draw.rounded_rectangle([cx - 15, cy - 15, cx + 15, cy + 15], radius=4, fill="#4e525a", outline="#6e727a", width=1)
+        draw.text((cx - 5, cy - 9), lvl, font=button_font, fill="white")
+        
+    # Draw Suit Buttons (C, D, H, S, NT)
+    # Clubs (C), Diamonds (D), Hearts (H), Spades (S), NT
+    # Align centers exactly to match offsets relative to NT=1050: S=1000, H=950, D=900, C=850
+    suits = [
+        ("C", 850, "black"),
+        ("D", 900, "red"),
+        ("H", 950, "red"),
+        ("S", 1000, "black"),
+        ("NT", 1050, "white")
+    ]
+    
+    for suit_name, cx, color in suits:
+        cy = 430
+        w = 40 if suit_name == "NT" else 30
+        draw.rounded_rectangle([cx - w//2, cy - 15, cx + w//2, cy + 15], radius=4, fill="#4e525a", outline="#6e727a", width=1)
+        
+        # Draw labels
+        if suit_name == "NT":
+            draw.text((cx - 11, cy - 9), "NT", font=button_font, fill=color)
+        else:
+            draw.text((cx - 6, cy - 9), suit_name, font=button_font, fill=color)
+            
+    # Draw special buttons "Pass" and "DBL"
+    # Pass
+    draw.rounded_rectangle([770, 415, 815, 445], radius=4, fill="#2e7d32", outline="#388e3c", width=1)
+    draw.text((774, 424), "PASS", font=button_font, fill="white")
+    # DBL
+    draw.rounded_rectangle([1085, 415, 1130, 445], radius=4, fill="#c62828", outline="#d32f2f", width=1)
+    draw.text((1092, 424), "DBL", font=button_font, fill="white")
     
     # 5. Draw Build Info Button (x=900, y=680, w=200, h=50)
     btn_x, btn_y, btn_w, btn_h = 900, 680, 200, 50

@@ -18,10 +18,10 @@
         "height": 310
     },
     "player_hand_roi": {
-        "x": 1260,
-        "y": 550,
-        "width": 418,
-        "height": 60
+        "x": 1170,
+        "y": 871,
+        "width": 530,
+        "height": 65
     },
     "build_info_btn": {
         "x": 1460,

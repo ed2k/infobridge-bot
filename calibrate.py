@@ -75,7 +75,7 @@ def main():
     
     # 5. Build Info Button
     print("\n--- Calibrating Click Action ---")
-    config["build_info_btn"] = get_point("Point to the 'Build Info' button or text area to click")
+    config["build_info_btn"] = get_point("Point to the contract (number and suit) above the card area around the center of the board to click")
     
     # Save config
     with open(CONFIG_FILE, "w") as f:

@@ -32,11 +32,11 @@ def main():
     mock_config = {
         "bidding_roi": {"x": 800, "y": 80, "width": 350, "height": 250},
         "trick_roi": {"x": 300, "y": 250, "width": 400, "height": 300},
-        "player_hand_roi": {"x": 300, "y": 600, "width": 500, "height": 120}
+        "player_hand_roi": {"x": 300, "y": 600, "width": 500, "height": 60}
     }
     
     # Instantiate analyzer
-    analyzer = BridgeAnalyzer()
+    analyzer = BridgeAnalyzer(verbose=True)
     
     # ----------------------------------------------------
     # Test Bidding History OCR
@@ -96,7 +96,7 @@ def main():
     print("Saved crop to debug_test_crops/test_hand.png")
     
     try:
-        detected_hand = analyzer.extract_multiple_cards(hand_crop)
+        detected_hand = analyzer.extract_hand_cards(hand_crop)
         print("Extracting cards...")
         if detected_hand:
             cards_str = [f"{c['rank'] or '?'}{c['suit'] or '?'}" for c in detected_hand]

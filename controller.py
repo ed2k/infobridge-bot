@@ -60,7 +60,9 @@ class BridgeController:
         
         # Click
         print("🖱️ Clicking button...")
-        pyautogui.click()
+        pyautogui.mouseDown()
+        time.sleep(0.15)
+        pyautogui.mouseUp()
         
         # Small wait after click
         time.sleep(0.2)
@@ -96,12 +98,52 @@ class BridgeController:
         time.sleep(0.1)
         
         print("🖱️ Clicking card...")
-        pyautogui.click()
+        pyautogui.mouseDown()
+        time.sleep(0.15)
+        pyautogui.mouseUp()
         time.sleep(0.2)
         
         if return_to_start:
             print(f"🖱️ Returning mouse to original position: ({start_x}, {start_y})")
             pyautogui.moveTo(start_x, start_y, duration=move_duration, tween=pyautogui.easeInOutQuad)
+
+    def click_bid(self, bid_bbox, return_to_start=True, move_duration=0.3):
+        """
+        Calculates the screen coordinate of a bid based on its bounding box
+        relative to the bidding ROI, moves the mouse, clicks it, and returns.
+        """
+        self.config = self.load_config()
+        
+        bidding_roi = self.config.get("bidding_roi")
+        if not bidding_roi:
+            raise ValueError("Bidding ROI coordinates not configured in config.json")
+            
+        # Calculate target global coordinates
+        # Bid center is relative x + (w / 2), and y is relative y + (h / 2)
+        target_x = int(bidding_roi["x"] + bid_bbox["x"] + (bid_bbox["w"] / 2))
+        target_y = int(bidding_roi["y"] + bid_bbox["y"] + (bid_bbox["h"] / 2))
+        
+        if self.dry_run:
+            print(f"🤖 [DRY RUN] Would click bid at ({target_x}, {target_y}) - relative bbox {bid_bbox}")
+            return target_x, target_y
+            
+        start_x, start_y = pyautogui.position()
+        print(f"🖱️ Moving mouse to bid: ({target_x}, {target_y}) from ({start_x}, {start_y})...")
+        
+        pyautogui.moveTo(target_x, target_y, duration=move_duration, tween=pyautogui.easeInOutQuad)
+        time.sleep(0.1)
+        
+        print("🖱️ Clicking bid...")
+        pyautogui.mouseDown()
+        time.sleep(0.15)
+        pyautogui.mouseUp()
+        time.sleep(0.2)
+        
+        if return_to_start:
+            print(f"🖱️ Returning mouse to original position: ({start_x}, {start_y})")
+            pyautogui.moveTo(start_x, start_y, duration=move_duration, tween=pyautogui.easeInOutQuad)
+            
+        return target_x, target_y
 
 if __name__ == "__main__":
     try:

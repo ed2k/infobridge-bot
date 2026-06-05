@@ -1,0 +1,77 @@
+{
+    "timestamp": "2026-06-04T18:44:46.807752",
+    "dealer": "S",
+    "first_lead": "S",
+    "initial_hand": [
+        {
+            "rank": "7",
+            "suit": "spade",
+            "bbox": {
+                "x": 84,
+                "y": 0,
+                "w": 40,
+                "h": 60
+            }
+        },
+        {
+            "rank": "7",
+            "suit": "spade",
+            "bbox": {
+                "x": 109,
+                "y": 0,
+                "w": 40,
+                "h": 60
+            }
+        },
+        {
+            "rank": "4",
+            "suit": "spade",
+            "bbox": {
+                "x": 134,
+                "y": 0,
+                "w": 40,
+                "h": 60
+            }
+        },
+        {
+            "rank": "Q",
+            "suit": "spade",
+            "bbox": {
+                "x": 184,
+                "y": 0,
+                "w": 40,
+                "h": 60
+            }
+        }
+    ],
+    "bids": [
+        [
+            "S",
+            "PASS"
+        ],
+        [
+            "W",
+            "1NT"
+        ],
+        [
+            "S",
+            "PASS"
+        ],
+        [
+            "S",
+            "DBL"
+        ],
+        [
+            "W",
+            "PASS"
+        ]
+    ],
+    "completed_tricks": [
+        {
+            "N": "SA",
+            "E": "DK",
+            "S": "ST",
+            "W": "DQ"
+        }
+    ]
+}
