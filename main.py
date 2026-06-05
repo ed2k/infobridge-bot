@@ -69,7 +69,8 @@ def run_analysis(verbose=True):
         bids = analyzer.extract_bids(bidding_img)
         print("\n--- BIDS DETECTED ---")
         if bids:
-            print(" -> ".join(bids))
+            flat = [b[1] for b in bids]
+            print(" -> ".join(flat))
         else:
             print("No bids detected (or OCR returned empty text).")
 
@@ -93,6 +94,15 @@ def run_analysis(verbose=True):
             print(", ".join(cards_str))
         else:
             print("No cards detected in player's hand.")
+
+        # 4. Bidding Hint Text (above bidding headers)
+        hint_img = cap.capture_bidding_hint()
+        hint_text = analyzer.extract_bidding_hint(hint_img)
+        print("\n--- BIDDING HINT ---")
+        if hint_text:
+            print(f"  {hint_text}")
+        else:
+            print("  (none)")
             
     except FileNotFoundError as e:
         print(f"❌ Error: {e}")
@@ -551,7 +561,12 @@ def run_decision_loop(interval=2.0, dry_run=False, verbose=False, once=False, sa
                 if bids != last_bids:
                     last_bids = bids
                     table_str = format_bidding_table(bids)
-                    print(f"\n📢 Bids updated:\n{table_str}")
+                    hint_img = cap.capture_bidding_hint()
+                    hint_text = analyzer.extract_bidding_hint(hint_img)
+                    if hint_text:
+                        print(f"\n📢 Bids updated:\n{table_str}\n💡 Hint: {hint_text}")
+                    else:
+                        print(f"\n📢 Bids updated:\n{table_str}")
                     
                 suggested_bid = decide_bid(valid_hand, flat_bids)
                 

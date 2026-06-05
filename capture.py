@@ -49,6 +49,12 @@ class ScreenCapture:
                     "width": int(w * 0.5),
                     "height": int(h * 0.6)
                 },
+                "bidding_hint_roi": {
+                    "x": int(w * 0.72),
+                    "y": 30,
+                    "width": int(w * 0.26),
+                    "height": int(h * 0.08)
+                },
                 "bidding_roi": {
                     "x": int(w * 0.72),
                     "y": 60,
@@ -120,6 +126,10 @@ class ScreenCapture:
         """Captures the bidding history/box region."""
         return self.capture_region(self.config["bidding_roi"])
 
+    def capture_bidding_hint(self):
+        """Captures the bidding hint text above the bidding headers."""
+        return self.capture_region(self.config["bidding_hint_roi"])
+
     def capture_trick(self):
         """Captures the trick play area."""
         return self.capture_region(self.config["trick_roi"])
@@ -158,6 +168,13 @@ class ScreenCapture:
             print("Saved player hand capture to debug_captures/4_player_hand.png")
         except Exception as e:
             print(f"Error capturing player hand: {e}")
+
+        try:
+            hint = self.capture_bidding_hint()
+            cv2.imwrite(os.path.join(output_dir, "5_bidding_hint.png"), hint)
+            print("Saved bidding hint capture to debug_captures/5_bidding_hint.png")
+        except Exception as e:
+            print(f"Error capturing bidding hint: {e}")
 
 if __name__ == "__main__":
     try:

@@ -116,6 +116,16 @@ class BridgeAnalyzer:
     def extract_bids_with_bboxes(self, bidding_img, fx=4.0):
         return self._extract_bids_structured(bidding_img, fx=fx, with_bboxes=True)
 
+    def extract_bidding_hint(self, hint_img, fx=4.0):
+        processed = self.preprocess_for_ocr(hint_img, fx=fx, thresh_val=None)
+        text = pytesseract.image_to_string(
+            processed, config="--psm 6 --oem 3"
+        )
+        text = text.strip()
+        if text:
+            text = re.sub(r'\s+', ' ', text)
+        return text if text else ""
+
     def _extract_bids_structured(self, bidding_img, fx=4.0, with_bboxes=False):
         import csv
         from io import StringIO

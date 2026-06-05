@@ -5,6 +5,12 @@
         "width": 435,
         "height": 830
     },
+    "bidding_hint_roi": {
+        "x": 1288,
+        "y": 430,
+        "width": 270,
+        "height": 180
+    },
     "bidding_roi": {
         "x": 1318,
         "y": 600,
