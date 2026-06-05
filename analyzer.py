@@ -502,7 +502,6 @@ class BridgeAnalyzer:
         if rank_crop.size == 0 or suit_crop.size == 0:
             return None, None
             
-        # Extract Rank using multi-scaling and multi-PSM fallback loop for robustness
         def normalize_rank_text(raw_text):
             rank_text = raw_text.strip().upper().replace(" ", "")
             if not rank_text:
@@ -520,6 +519,16 @@ class BridgeAnalyzer:
             valid_ranks = ["A", "K", "Q", "J", "T", "9", "8", "7", "6", "5", "4", "3", "2"]
             return rank_text if rank_text in valid_ranks else None
 
+        def _is_q_not_9(gray_crop):
+            """Disambiguate 9 vs Q using bottom-half ink distribution.
+            9 has a stem on the left, Q has a tail on the right."""
+            h, w = gray_crop.shape
+            bottom = gray_crop[h//2:, :]
+            _, binary = cv2.threshold(bottom, 0, 255, cv2.THRESH_BINARY_INV | cv2.THRESH_OTSU)
+            left_ink = np.sum(binary[:, :w//2] > 0)
+            right_ink = np.sum(binary[:, w//2:] > 0)
+            return right_ink > left_ink * 1.5
+
         rank_text = None
         for fx_val in [5.0, 4.0, 3.0]:
             processed_rank = self.preprocess_for_ocr(rank_crop, fx=fx_val)
@@ -534,6 +543,12 @@ class BridgeAnalyzer:
                     pass
             if rank_text:
                 break
+
+        # Disambiguate 9 vs Q: Q has a tail (right-side ink), 9 has a left stem
+        if rank_text == "9":
+            gray_rank = cv2.cvtColor(rank_crop, cv2.COLOR_BGR2GRAY)
+            if _is_q_not_9(gray_rank):
+                rank_text = "Q"
             
         # Extract Suit
         suit = None
