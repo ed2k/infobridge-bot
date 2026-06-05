@@ -531,7 +531,14 @@ def run_decision_loop(interval=2.0, dry_run=False, verbose=False, once=False, sa
             suit_symbols = {"spade": "♠", "heart": "♥", "diamond": "♦", "club": "♣"}
             trick_str = " ".join([f"{c['rank']}{suit_symbols.get(c['suit'], '')}" for c in trick_cards])
             print(f"📸 Scan: Stage={detected_stage} | Bids=[{bids_str}] | Hand=[{hand_str}] | Trick=[{trick_str}]")
-            
+
+            # Capture and display hint text (runs every scan)
+            if is_bidding_active:
+                hint_img = cap.capture_bidding_hint()
+                hint_text = analyzer.extract_bidding_hint(hint_img)
+                if hint_text:
+                    print(f"💡 Hint: {hint_text}")
+
             # If we have no cards left, the board is finished
             if not valid_hand:
                 if current_stage != "Waiting":
@@ -561,12 +568,7 @@ def run_decision_loop(interval=2.0, dry_run=False, verbose=False, once=False, sa
                 if bids != last_bids:
                     last_bids = bids
                     table_str = format_bidding_table(bids)
-                    hint_img = cap.capture_bidding_hint()
-                    hint_text = analyzer.extract_bidding_hint(hint_img)
-                    if hint_text:
-                        print(f"\n📢 Bids updated:\n{table_str}\n💡 Hint: {hint_text}")
-                    else:
-                        print(f"\n📢 Bids updated:\n{table_str}")
+                    print(f"\n📢 Bids updated:\n{table_str}")
                     
                 suggested_bid = decide_bid(valid_hand, flat_bids)
                 
