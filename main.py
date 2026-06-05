@@ -329,11 +329,9 @@ def format_compact_hand(hand):
         rank = card.get("rank")
         suit = card.get("suit")
         if rank and suit in suits:
-            r_str = "10" if rank == "10" or rank == "T" else rank
-            suits[suit].append(r_str)
-            
-    # Sort ranks high to low
-    rank_order = {r: idx for idx, r in enumerate(["A", "K", "Q", "J", "10", "9", "8", "7", "6", "5", "4", "3", "2"])}
+            suits[suit].append(rank)
+    
+    rank_order = {r: idx for idx, r in enumerate(["A", "K", "Q", "J", "T", "9", "8", "7", "6", "5", "4", "3", "2"])}
     
     parts = []
     # Standard order: Spades, Hearts, Diamonds, Clubs
@@ -361,6 +359,8 @@ def format_compact_bids(bids):
             compact_list.append(b)
     return "-".join(compact_list)
 
+NEXT_DIR = {"N": "E", "E": "S", "S": "W", "W": "N"}
+
 def format_bidding_table(direction_bids):
     """
     Formats the chronological list of direction-bid tuples into a table under N, E, S, W columns.
@@ -373,7 +373,6 @@ def format_bidding_table(direction_bids):
     for direction, bid in direction_bids:
         col_idx = cols.index(direction) if direction in cols else 0
         
-        # Format the bid text compactly for the table (e.g. PASS -> P)
         b_clean = bid.upper()
         if b_clean == "PASS":
             b_compact = "P"
@@ -384,7 +383,6 @@ def format_bidding_table(direction_bids):
         else:
             b_compact = bid
             
-        # Clockwise chronological check: if col_idx is before or equal to an already filled column index, start a new row.
         need_new_row = False
         for i in range(4):
             if current_row[i] != "-":
@@ -398,14 +396,27 @@ def format_bidding_table(direction_bids):
             
         current_row[col_idx] = b_compact
         
+    waiting = None
     if any(val != "-" for val in current_row):
         rows.append(current_row)
-        
+        if sum(1 for v in current_row if v == "-") > 0:
+            last_dir = direction_bids[-1][0]
+            waiting = NEXT_DIR.get(last_dir)
+            
     lines = []
     lines.append("   N      E      S      W")
     lines.append("=========================")
     for r in rows:
-        lines.append(f"  {r[0]:<4}   {r[1]:<4}   {r[2]:<4}   {r[3]:<4}")
+        line_parts = []
+        for i, d in enumerate(cols):
+            val = r[i]
+            if waiting and r is rows[-1] and val == "-":
+                line_parts.append("?   " if i == cols.index(waiting) else "-   ")
+            else:
+                line_parts.append(f"{val:<4}")
+        lines.append("  " + "   ".join(line_parts))
+    if waiting:
+        lines.append(f"⏳ Waiting for {waiting} to bid...")
     return "\n".join(lines)
 
 def run_decision_loop(interval=2.0, dry_run=False, verbose=False, once=False, save_play=False, output_dir="captured_plays"):

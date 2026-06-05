@@ -21,7 +21,7 @@ def test_hand_serialization():
         {"rank": "3", "suit": "spade"},
         {"rank": "Q", "suit": "heart"},
         {"rank": "J", "suit": "heart"},
-        {"rank": "10", "suit": "heart"},
+        {"rank": "T", "suit": "heart"},
         {"rank": "5", "suit": "heart"},
         {"rank": "9", "suit": "diamond"},
         {"rank": "8", "suit": "diamond"},
@@ -85,7 +85,7 @@ def test_trick_transitions():
     t3 = [
         {"rank": "A", "suit": "spade", "bbox": {"x": 170, "y": 25, "w": 55, "h": 80}},
         {"rank": "K", "suit": "heart", "bbox": {"x": 260, "y": 110, "w": 55, "h": 80}},
-        {"rank": "10", "suit": "club", "bbox": {"x": 170, "y": 195, "w": 55, "h": 80}},
+        {"rank": "T", "suit": "club", "bbox": {"x": 170, "y": 195, "w": 55, "h": 80}},
         {"rank": "Q", "suit": "diamond", "bbox": {"x": 80, "y": 110, "w": 55, "h": 80}}
     ]
     tracker.register_trick_state(t3, w, h)

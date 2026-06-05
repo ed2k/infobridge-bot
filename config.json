@@ -6,10 +6,10 @@
         "height": 830
     },
     "bidding_roi": {
-        "x": 1351,
-        "y": 365,
+        "x": 1318,
+        "y": 600,
         "width": 210,
-        "height": 105
+        "height": 100
     },
     "trick_roi": {
         "x": 1280,

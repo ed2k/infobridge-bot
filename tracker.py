@@ -121,9 +121,8 @@ class GameTracker:
             rank = card.get("rank")
             suit = card.get("suit")
             if rank and suit in suits:
-                r_str = "T" if rank == "10" or rank == "T" else rank
-                if r_str not in suits[suit]:
-                    suits[suit].append(r_str)
+                if rank not in suits[suit]:
+                    suits[suit].append(rank)
                 
         rank_order = {r: idx for idx, r in enumerate(["A", "K", "Q", "J", "T", "9", "8", "7", "6", "5", "4", "3", "2"])}
         
