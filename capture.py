@@ -85,6 +85,36 @@ class ScreenCapture:
         with open(self.config_path, "r") as f:
             return json.load(f)
 
+    def _get_bounding_roi(self):
+        keys = ["bidding_hint_roi", "bidding_roi", "trick_roi", "player_hand_roi", "ui_roi"]
+        xs, ys, rights, bottoms = [], [], [], []
+        for k in keys:
+            r = self.config.get(k)
+            if r:
+                xs.append(r["x"])
+                ys.append(r["y"])
+                rights.append(r["x"] + r["width"])
+                bottoms.append(r["y"] + r["height"])
+        if not xs:
+            return {"x": 0, "y": 0, "width": 1, "height": 1}
+        return {
+            "x": min(xs), "y": min(ys),
+            "width": max(rights) - min(xs),
+            "height": max(bottoms) - min(ys),
+        }
+
+    def capture_game_panel(self):
+        """Captures the minimal bounding rect covering all game ROIs in one shot."""
+        return self.capture_region(self._get_bounding_roi())
+
+    def crop_from_panel(self, panel_img, roi):
+        """Crops a sub-region from the full game panel image."""
+        panel_roi = self._get_bounding_roi()
+        ox, oy = panel_roi["x"], panel_roi["y"]
+        x = roi["x"] - ox
+        y = roi["y"] - oy
+        return panel_img[y:y + roi["height"], x:x + roi["width"]]
+
     def capture_region(self, roi):
         """
         Captures a screen region defined by a dict with x, y, width, height.

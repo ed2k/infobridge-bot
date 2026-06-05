@@ -465,10 +465,12 @@ def run_decision_loop(interval=2.0, dry_run=False, verbose=False, once=False, sa
         while True:
             current_time = time.time()
             
+            # Capture full game panel once, crop sub-regions from it
+            panel_img = cap.capture_game_panel()
+            
             # 1. Capture Bids
-            bidding_img = cap.capture_bidding()
+            bidding_img = cap.crop_from_panel(panel_img, cap.config["bidding_roi"])
             if prev_bidding_img is not None and images_are_similar(prev_bidding_img, bidding_img, threshold=1.0):
-                # Similar image, reuse bids
                 pass
             else:
                 bids = analyzer.extract_bids(bidding_img)
@@ -478,9 +480,8 @@ def run_decision_loop(interval=2.0, dry_run=False, verbose=False, once=False, sa
                 tracker.update_bids(bids)
             
             # 2. Capture Hand
-            hand_img = cap.capture_player_hand()
+            hand_img = cap.crop_from_panel(panel_img, cap.config["player_hand_roi"])
             if prev_hand_img is not None and images_are_similar(prev_hand_img, hand_img, threshold=1.0):
-                # Similar image, reuse hand and valid_hand
                 pass
             else:
                 hand = analyzer.extract_hand_cards(hand_img)
@@ -490,10 +491,9 @@ def run_decision_loop(interval=2.0, dry_run=False, verbose=False, once=False, sa
             if save_play:
                 tracker.set_initial_hand(valid_hand)
             
-            # 3. Capture Trick Cards (Needed for stage detection and play logic)
-            trick_img = cap.capture_trick()
+            # 3. Capture Trick Cards
+            trick_img = cap.crop_from_panel(panel_img, cap.config["trick_roi"])
             if prev_trick_img is not None and images_are_similar(prev_trick_img, trick_img, threshold=1.0):
-                # Similar image, reuse trick_cards
                 pass
             else:
                 trick_cards = analyzer.extract_multiple_cards(trick_img)
@@ -532,9 +532,9 @@ def run_decision_loop(interval=2.0, dry_run=False, verbose=False, once=False, sa
             trick_str = " ".join([f"{c['rank']}{suit_symbols.get(c['suit'], '')}" for c in trick_cards])
             print(f"📸 Scan: Stage={detected_stage} | Bids=[{bids_str}] | Hand=[{hand_str}] | Trick=[{trick_str}]")
 
-            # Capture and display hint text (runs every scan)
+            # Capture and display hint text (runs every scan, from same panel capture)
             if is_bidding_active:
-                hint_img = cap.capture_bidding_hint()
+                hint_img = cap.crop_from_panel(panel_img, cap.config["bidding_hint_roi"])
                 hint_text = analyzer.extract_bidding_hint(hint_img)
                 if hint_text:
                     print(f"💡 Hint: {hint_text}")
