@@ -68,7 +68,7 @@ def main():
             thresh_rank = cv2.threshold(scaled_rank, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)[1]
             
             # Whitelist standard ranks
-            config = "--psm 10 -c tessedit_char_whitelist=AKQJT1098765432"
+            config = "--psm 10 -c tessedit_char_whitelist=AKQJ1098765432"
             char = pytesseract.image_to_string(thresh_rank, config=config).strip().upper()
             ranks.append(char if char else "?")
             
