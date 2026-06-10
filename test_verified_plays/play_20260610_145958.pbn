@@ -1,18 +1,18 @@
 [Event "InfoBridge Live Capture"]
 [Site "InfoBridge Bot"]
-[Date "2026.06.04"]
+[Date "2026.06.10"]
 [Board "1"]
 [West "?"]
 [North "?"]
 [East "?"]
 [South "Bot"]
-[Dealer "S"]
+[Dealer "W"]
 [Vulnerable "None"]
-[Deal "N:? ? Q74... ?"]
+[Deal "N:? ? AK3.QJT2.87.54 ?"]
 
-[Auction "S"]
-Pass 1NT Pass Dbl
-Pass
+[Auction "W"]
+Pass 1NT Pass 3C
+Dbl Pass
 
 [Play "S"]
-ST DQ SA DK
+CT DQ SA HK

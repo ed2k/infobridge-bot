@@ -160,6 +160,20 @@ class UIDetector:
         h_strip = hand_img.shape[0]
         w_strip = hand_img.shape[1]
         
+        # Dynamically find the card strip vertically within hand_img to handle tall/calibrated crops
+        hsv_full = cv2.cvtColor(hand_img, cv2.COLOR_BGR2HSV)
+        card_mask = (hsv_full[:, :, 1] < 50) & (hsv_full[:, :, 2] > 170)
+        row_card_counts = np.sum(card_mask, axis=1)
+        card_rows = np.where(row_card_counts > 0.05 * w_strip)[0]
+        
+        if len(card_rows) >= 10:
+            y_start = card_rows[0]
+            y_end = card_rows[-1]
+            y_start = max(0, y_start - 2)
+            y_end = min(h_strip - 1, y_end + 2)
+            hand_img = hand_img[y_start:y_end+1, :]
+            h_strip = hand_img.shape[0]
+            
         target_h = 60
         scale = target_h / h_strip if h_strip != target_h else 1.0
         if scale != 1.0:
@@ -215,6 +229,27 @@ class UIDetector:
         Auto-detect suit icon positions in the hand image and extract templates.
         Works at any resolution by finding distinct suit colors and positions.
         """
+        # Crop and resize hand_img to normalized height 60 first to ensure proper template sizes
+        h_strip = hand_img.shape[0]
+        w_strip = hand_img.shape[1]
+        
+        hsv_full = cv2.cvtColor(hand_img, cv2.COLOR_BGR2HSV)
+        card_mask = (hsv_full[:, :, 1] < 50) & (hsv_full[:, :, 2] > 170)
+        row_card_counts = np.sum(card_mask, axis=1)
+        card_rows = np.where(row_card_counts > 0.05 * w_strip)[0]
+        
+        if len(card_rows) >= 10:
+            y_start = card_rows[0]
+            y_end = card_rows[-1]
+            y_start = max(0, y_start - 2)
+            y_end = min(h_strip - 1, y_end + 2)
+            hand_img = hand_img[y_start:y_end+1, :]
+            h_strip = hand_img.shape[0]
+            
+        if h_strip != 60:
+            scale = 60.0 / h_strip
+            hand_img = cv2.resize(hand_img, (0, 0), fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+            
         peaks, scale = self.detect_hand_card_peaks(hand_img, min_peaks=1)
         
         if len(peaks) < 4:

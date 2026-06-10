@@ -139,22 +139,30 @@ def test_pipeline():
                 "bbox": {"x": card_x1, "y": card_y1, "w": card_x2 - card_x1, "h": card_y2 - card_y1}
             })
             
-    # Group by region
-    # West Dummy: cx < 68, 350 <= cy <= 780
-    # Trick area: 68 <= cx < 302, 350 <= cy <= 780
-    # South hand: cy >= 650
+    # Group by region using dynamic proportions of the image dimensions:
+    # 1. South hand: cy >= 0.75 * h_img
+    # 2. North Dummy hand: cy < 0.22 * h_img and 0.20 * w_img <= cx < 0.80 * w_img
+    # 3. West Dummy hand: cx < 0.22 * w_img and 0.22 * h_img <= cy < 0.75 * h_img
+    # 4. East Dummy hand: cx >= 0.78 * w_img and 0.22 * h_img <= cy < 0.75 * h_img
+    # 5. Trick cards: 0.22 * w_img <= cx < 0.78 * w_img and 0.22 * h_img <= cy < 0.75 * h_img
     west_dummy = []
+    east_dummy = []
+    north_dummy = []
     trick_cards = []
     south_hand = []
     other_cards = []
     
     for card in detected_cards:
         cx, cy = card["cx"], card["cy"]
-        if cy >= 650:
+        if cy >= 0.75 * h_img:
             south_hand.append(card)
-        elif cx < 68 and 350 <= cy <= 780:
+        elif cy < 0.22 * h_img and 0.20 * w_img <= cx < 0.80 * w_img:
+            north_dummy.append(card)
+        elif cx < 0.22 * w_img and 0.22 * h_img <= cy < 0.75 * h_img:
             west_dummy.append(card)
-        elif 68 <= cx < 302 and 350 <= cy <= 780:
+        elif cx >= 0.78 * w_img and 0.22 * h_img <= cy < 0.75 * h_img:
+            east_dummy.append(card)
+        elif 0.22 * w_img <= cx < 0.78 * w_img and 0.22 * h_img <= cy < 0.75 * h_img:
             trick_cards.append(card)
         else:
             other_cards.append(card)
@@ -162,6 +170,14 @@ def test_pipeline():
     print("\n--- DETECTED CARDS BY REGION ---")
     print(f"West Dummy Hand ({len(west_dummy)}):")
     for c in sorted(west_dummy, key=lambda x: (x["cy"], x["cx"])):
+        print(f"  {c['rank']}{c['suit']} at cx={c['cx']:.1f}, cy={c['cy']:.1f}")
+        
+    print(f"East Dummy Hand ({len(east_dummy)}):")
+    for c in sorted(east_dummy, key=lambda x: (x["cy"], x["cx"])):
+        print(f"  {c['rank']}{c['suit']} at cx={c['cx']:.1f}, cy={c['cy']:.1f}")
+        
+    print(f"North Dummy Hand ({len(north_dummy)}):")
+    for c in sorted(north_dummy, key=lambda x: (x["cx"], x["cy"])):
         print(f"  {c['rank']}{c['suit']} at cx={c['cx']:.1f}, cy={c['cy']:.1f}")
         
     print(f"Trick Cards ({len(trick_cards)}):")

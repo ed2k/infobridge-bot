@@ -142,22 +142,30 @@ def find_cards_by_ocr_hints():
             })
             used_centers.append((cx, cy))
             
-    # Categorize cards into areas:
-    # 1. West Dummy hand: cx < 68, cy between 350 and 780
-    # 2. Trick cards: 68 <= cx < 302, cy between 350 and 780
-    # 3. South hand: cy >= 650 (or similar)
+    # Categorize cards into areas using dynamic proportions of the image dimensions:
+    # 1. South hand: cy >= 0.75 * h_img
+    # 2. North Dummy hand: cy < 0.22 * h_img and 0.20 * w_img <= cx < 0.80 * w_img
+    # 3. West Dummy hand: cx < 0.22 * w_img and 0.22 * h_img <= cy < 0.75 * h_img
+    # 4. East Dummy hand: cx >= 0.78 * w_img and 0.22 * h_img <= cy < 0.75 * h_img
+    # 5. Trick cards: 0.22 * w_img <= cx < 0.78 * w_img and 0.22 * h_img <= cy < 0.75 * h_img
     west_dummy = []
+    east_dummy = []
+    north_dummy = []
     trick_cards = []
     south_hand = []
     other_cards = []
     
     for card in detected_cards:
         cx, cy = card["cx"], card["cy"]
-        if cy >= 650:
+        if cy >= 0.75 * h_img:
             south_hand.append(card)
-        elif cx < 68 and 350 <= cy <= 780:
+        elif cy < 0.22 * h_img and 0.20 * w_img <= cx < 0.80 * w_img:
+            north_dummy.append(card)
+        elif cx < 0.22 * w_img and 0.22 * h_img <= cy < 0.75 * h_img:
             west_dummy.append(card)
-        elif 68 <= cx < 302 and 350 <= cy <= 780:
+        elif cx >= 0.78 * w_img and 0.22 * h_img <= cy < 0.75 * h_img:
+            east_dummy.append(card)
+        elif 0.22 * w_img <= cx < 0.78 * w_img and 0.22 * h_img <= cy < 0.75 * h_img:
             trick_cards.append(card)
         else:
             other_cards.append(card)
@@ -165,6 +173,14 @@ def find_cards_by_ocr_hints():
     print("\n--- DETECTED CARDS ---")
     print(f"West Dummy Hand ({len(west_dummy)}):")
     for c in west_dummy:
+        print(f"  {c['rank']}{c['suit']} at cx={c['cx']:.1f}, cy={c['cy']:.1f}")
+        
+    print(f"East Dummy Hand ({len(east_dummy)}):")
+    for c in east_dummy:
+        print(f"  {c['rank']}{c['suit']} at cx={c['cx']:.1f}, cy={c['cy']:.1f}")
+        
+    print(f"North Dummy Hand ({len(north_dummy)}):")
+    for c in north_dummy:
         print(f"  {c['rank']}{c['suit']} at cx={c['cx']:.1f}, cy={c['cy']:.1f}")
         
     print(f"Trick Cards ({len(trick_cards)}):")

@@ -687,7 +687,7 @@ class BridgeAnalyzer:
                 
         return detected_cards
 
-    def extract_hand_cards_linear(self, hand_img):
+    def extract_hand_cards_linear(self, hand_img, scale=1.0, y_start=0):
         """Fallback linear card slicing method."""
         gray = cv2.cvtColor(hand_img, cv2.COLOR_BGR2GRAY)
         _, thresh = cv2.threshold(gray, 220, 255, cv2.THRESH_BINARY)
@@ -718,7 +718,12 @@ class BridgeAnalyzer:
             detected_cards.append({
                 "rank": rank,
                 "suit": suit,
-                "bbox": {"x": x_card, "y": 0, "w": 40, "h": h_strip}
+                "bbox": {
+                    "x": int(x_card / scale),
+                    "y": y_start,
+                    "w": int(40 / scale),
+                    "h": int(h_strip / scale)
+                }
             })
         return detected_cards
 
@@ -732,6 +737,22 @@ class BridgeAnalyzer:
         h_strip = hand_img.shape[0]
         w_strip = hand_img.shape[1]
         
+        # Dynamically find the card strip vertically within hand_img to handle tall/calibrated crops
+        hsv_full = cv2.cvtColor(hand_img, cv2.COLOR_BGR2HSV)
+        card_mask = (hsv_full[:, :, 1] < 50) & (hsv_full[:, :, 2] > 170)
+        row_card_counts = np.sum(card_mask, axis=1)
+        card_rows = np.where(row_card_counts > 0.05 * w_strip)[0]
+        
+        y_start_orig = 0
+        if len(card_rows) >= 10:
+            y_start = card_rows[0]
+            y_end = card_rows[-1]
+            y_start = max(0, y_start - 2)
+            y_end = min(h_strip - 1, y_end + 2)
+            hand_img = hand_img[y_start:y_end+1, :]
+            h_strip = hand_img.shape[0]
+            y_start_orig = y_start
+            
         # Normalize hand image height to 60 to match suit template scaling
         scale = 1.0
         if h_strip != 60:
@@ -791,7 +812,7 @@ class BridgeAnalyzer:
         if len(peaks) < 4:
             if self.verbose:
                 print(f"⚠️ Color peak detection found too few cards ({len(peaks)}). Falling back to linear slicing.")
-            return self.extract_hand_cards_linear(hand_img)
+            return self.extract_hand_cards_linear(hand_img, scale=scale, y_start=y_start_orig)
             
         detected_cards = []
         for p in peaks:
@@ -810,9 +831,9 @@ class BridgeAnalyzer:
                 "suit": suit,
                 "bbox": {
                     "x": int(x_card / scale),
-                    "y": 0,
+                    "y": y_start_orig,
                     "w": int(40 / scale),
-                    "h": int(h_strip / scale)
+                    "h": int(60.0 / scale)
                 }
             })
             
