@@ -276,14 +276,74 @@ class BridgeAnalyzer:
                 combined_text = " ".join(w["text"] for w in g_words)
                 std_text = self.standardize_bid(combined_text)
 
+                min_left = min(w["left"] for w in g_words)
+                min_top_w = min(w["top"] for w in g_words)
+                max_right = max(w["left"] + w["width"] for w in g_words)
+                max_bottom = max(w["top"] + w["height"] for w in g_words)
+
+                # Resolve suit symbol images in level bids (e.g. 1H, 1S) that Tesseract misreads
+                if len(std_text) >= 2 and std_text[0] in "1234567" and std_text[1:] not in ("S", "H", "D", "C", "NT"):
+                    x1 = int(min_left / fx)
+                    y1 = int(min_top_w / fx)
+                    x2 = int(max_right / fx)
+                    y2 = int(max_bottom / fx)
+                    x1 = max(0, min(x1, bidding_img.shape[1] - 1))
+                    y1 = max(0, min(y1, bidding_img.shape[0] - 1))
+                    x2 = max(0, min(x2, bidding_img.shape[1]))
+                    y2 = max(0, min(y2, bidding_img.shape[0]))
+                    
+                    if x2 > x1 and y2 > y1:
+                        word_crop = bidding_img[y1:y2, x1:x2]
+                        suit_w = int(word_crop.shape[1] * 0.6)
+                        if suit_w > 0:
+                            suit_crop = word_crop[:, word_crop.shape[1] - suit_w:]
+                            suit = self.classify_suit_template_matching(suit_crop)
+                            if not suit:
+                                suit = self.classify_suit_by_color_shape(suit_crop)
+                                
+                            if suit in ("spade", "heart", "diamond", "club"):
+                                suit_map = {
+                                    "spade": "S",
+                                    "heart": "H",
+                                    "diamond": "D",
+                                    "club": "C"
+                                }
+                                std_text = f"{std_text[0]}{suit_map[suit]}"
+
+                # Disambiguate DBL (Red) and RDBL (Blue) based on color
+                if std_text in ("DBL", "RDBL"):
+                    x1 = int(min_left / fx)
+                    y1 = int(min_top_w / fx)
+                    x2 = int(max_right / fx)
+                    y2 = int(max_bottom / fx)
+                    x1 = max(0, min(x1, bidding_img.shape[1] - 1))
+                    y1 = max(0, min(y1, bidding_img.shape[0] - 1))
+                    x2 = max(0, min(x2, bidding_img.shape[1]))
+                    y2 = max(0, min(y2, bidding_img.shape[0]))
+                    
+                    if x2 > x1 and y2 > y1:
+                        crop = bidding_img[y1:y2, x1:x2]
+                        hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
+                        
+                        lower_red1 = np.array([0, 100, 50])
+                        upper_red1 = np.array([15, 255, 255])
+                        lower_red2 = np.array([165, 100, 50])
+                        upper_red2 = np.array([180, 255, 255])
+                        red_pixels = np.sum((cv2.inRange(hsv, lower_red1, upper_red1) > 0) | (cv2.inRange(hsv, lower_red2, upper_red2) > 0))
+                        
+                        lower_blue = np.array([90, 100, 50])
+                        upper_blue = np.array([130, 255, 255])
+                        blue_pixels = np.sum(cv2.inRange(hsv, lower_blue, upper_blue) > 0)
+                        
+                        if red_pixels > 15 or blue_pixels > 15:
+                            if std_text == "RDBL" and red_pixels > blue_pixels * 1.5:
+                                std_text = "DBL"
+                            elif std_text == "DBL" and blue_pixels > red_pixels * 1.5:
+                                std_text = "RDBL"
+
                 if bid_pattern.match(std_text):
                     direction = col_dirs[col_idx]
                     if with_bboxes:
-                        min_left = min(w["left"] for w in g_words)
-                        min_top_w = min(w["top"] for w in g_words)
-                        max_right = max(w["left"] + w["width"] for w in g_words)
-                        max_bottom = max(w["top"] + w["height"] for w in g_words)
-
                         bbox = {
                             "x": min_left / fx,
                             "y": min_top_w / fx,
