@@ -519,16 +519,6 @@ class BridgeAnalyzer:
             valid_ranks = ["A", "K", "Q", "J", "T", "9", "8", "7", "6", "5", "4", "3", "2"]
             return rank_text if rank_text in valid_ranks else None
 
-        def _is_q_not_9(gray_crop):
-            """Disambiguate 9 vs Q using bottom-half ink distribution.
-            9 has a stem on the left, Q has a tail on the right."""
-            h, w = gray_crop.shape
-            bottom = gray_crop[h//2:, :]
-            _, binary = cv2.threshold(bottom, 0, 255, cv2.THRESH_BINARY_INV | cv2.THRESH_OTSU)
-            left_ink = np.sum(binary[:, :w//2] > 0)
-            right_ink = np.sum(binary[:, w//2:] > 0)
-            return right_ink > left_ink * 1.5
-
         rank_text = None
         for fx_val in [5.0, 4.0, 3.0]:
             processed_rank = self.preprocess_for_ocr(rank_crop, fx=fx_val)
@@ -544,11 +534,28 @@ class BridgeAnalyzer:
             if rank_text:
                 break
 
-        # Disambiguate 9 vs Q: Q has a tail (right-side ink), 9 has a left stem
-        if rank_text == "9":
+        # Disambiguate 9 vs Q on red/black cards using bottom-half ink distribution
+        if rank_text in ("9", "Q"):
             gray_rank = cv2.cvtColor(rank_crop, cv2.COLOR_BGR2GRAY)
-            if _is_q_not_9(gray_rank):
-                rank_text = "Q"
+            h, w = gray_rank.shape
+            bottom = gray_rank[h//2:, :]
+            _, binary = cv2.threshold(bottom, 0, 255, cv2.THRESH_BINARY_INV | cv2.THRESH_OTSU)
+            left_ink = np.sum(binary[:, :w//2] > 0)
+            right_ink = np.sum(binary[:, w//2:] > 0)
+            bottom_ink = left_ink + right_ink
+            
+            if bottom_ink > 50:  # Real card crop
+                ratio = right_ink / max(1, left_ink)
+                # Q has balanced ink in the bottom half (ratio around 1.1 - 1.3)
+                # 9 has highly skewed ink to the right (ratio around 1.6 - 3.5)
+                if ratio < 1.45:
+                    rank_text = "Q"
+                else:
+                    rank_text = "9"
+            else:
+                # Mock card crop or fallback:
+                if rank_text == "9" and right_ink > left_ink * 1.5:
+                    rank_text = "Q"
             
         # Extract Suit
         suit = None

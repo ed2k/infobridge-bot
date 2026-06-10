@@ -126,6 +126,61 @@ def main():
     except Exception as e:
         print(f"❌ Error during player hand card extraction: {e}")
 
+    # ----------------------------------------------------
+    # Test Real Screenshots from debug_captures/
+    # ----------------------------------------------------
+    bidding_real_path = "debug_captures/2_bidding.png"
+    trick_real_path = "debug_captures/3_trick.png"
+    hand_real_path = "debug_captures/4_player_hand.png"
+    
+    if os.path.exists(bidding_real_path) or os.path.exists(trick_real_path) or os.path.exists(hand_real_path):
+        print("\n====================================================")
+        print("          TESTING ON REAL CAPTURED SCREENSHOTS       ")
+        print("====================================================")
+        
+        # Test Bidding History OCR
+        if os.path.exists(bidding_real_path):
+            print("\n--- Real-1. Testing Bidding History OCR (Real) ---")
+            bidding_crop = cv2.imread(bidding_real_path)
+            try:
+                bids_with_dirs = analyzer.extract_bids(bidding_crop)
+                if bids_with_dirs:
+                    bids_str = " -> ".join([f"{direction}:{bid}" for direction, bid in bids_with_dirs])
+                    print(f"👉 Success! Extracted Real Bids: {bids_str}")
+                else:
+                    print("⚠️ OCR completed, but no valid bids were recognized in real bidding image.")
+            except Exception as e:
+                print(f"❌ Error during real bidding OCR: {e}")
+                
+        # Test Trick Area
+        if os.path.exists(trick_real_path):
+            print("\n--- Real-2. Testing Trick Area Card Extraction (Real) ---")
+            trick_crop = cv2.imread(trick_real_path)
+            try:
+                detected_cards = analyzer.extract_multiple_cards(trick_crop)
+                if detected_cards:
+                    print(f"👉 Success! Detected {len(detected_cards)} real cards:")
+                    for idx, c in enumerate(detected_cards):
+                        print(f"   Card {idx+1}: Rank={c['rank']}, Suit={c['suit']}")
+                else:
+                    print("⚠️ No cards detected in real trick area. (This is expected if the game is in the bidding phase).")
+            except Exception as e:
+                print(f"❌ Error during real trick area card extraction: {e}")
+                
+        # Test Player Hand
+        if os.path.exists(hand_real_path):
+            print("\n--- Real-3. Testing Player Hand Card Extraction (Real) ---")
+            hand_crop = cv2.imread(hand_real_path)
+            try:
+                detected_hand = analyzer.extract_hand_cards(hand_crop)
+                if detected_hand:
+                    cards_str = [f"{c['rank'] or '?'}{c['suit'] or '?'}" for c in detected_hand]
+                    print(f"👉 Success! Detected real hand: {', '.join(cards_str)}")
+                else:
+                    print("⚠️ No cards detected in real player hand.")
+            except Exception as e:
+                print(f"❌ Error during real player hand card extraction: {e}")
+
     print("\n====================================================")
     print("Pipeline test complete.")
     print("====================================================")
