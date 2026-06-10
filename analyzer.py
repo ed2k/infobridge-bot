@@ -541,7 +541,7 @@ class BridgeAnalyzer:
             return best_match
         return None
 
-    def extract_card(self, card_img):
+    def extract_card(self, card_img, is_hand=True):
         """
         Parses a single card image crop.
         Returns a tuple (rank, suit) or (None, None).
@@ -555,9 +555,30 @@ class BridgeAnalyzer:
         if h == 60:
             rank_crop = card_img[9:35, 6:24]
             suit_crop = card_img[24:55, 6:24]
-        else:
+        elif is_hand:
+            # Overlapping cards: rank and suit are on the left
             rank_crop = card_img[2:int(h*0.43), 5:int(w*0.45)]
             suit_crop = card_img[int(h*0.40):int(h*0.93), 2:int(w*0.50)]
+        else:
+            # Played cards in trick area (fully visible, centered rank and suit symbol)
+            # Use dynamic split to find the gap between rank and suit symbol
+            top_65 = card_img[0:int(h*0.65), :]
+            gray = cv2.cvtColor(top_65, cv2.COLOR_BGR2GRAY)
+            _, binary = cv2.threshold(gray, 127, 255, cv2.THRESH_BINARY_INV)
+            row_sums = np.sum(binary > 0, axis=1)
+            
+            search_start = int(h * 0.40)
+            search_end = int(h * 0.62)
+            best_y = int(h * 0.50)
+            min_sum = float('inf')
+            for y in range(search_start, search_end):
+                window_sum = np.sum(row_sums[y-1:y+2])
+                if window_sum < min_sum:
+                    min_sum = window_sum
+                    best_y = y
+                    
+            rank_crop = card_img[2:best_y, int(w*0.10):int(w*0.90)]
+            suit_crop = card_img[best_y:int(h*0.95), int(w*0.10):int(w*0.90)]
         
         if rank_crop.size == 0 or suit_crop.size == 0:
             return None, None
@@ -636,23 +657,25 @@ class BridgeAnalyzer:
         gray = cv2.cvtColor(cards_img, cv2.COLOR_BGR2GRAY)
         _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
         
-        contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        # Use RETR_LIST instead of RETR_EXTERNAL to find cards nested within the yellow border
+        contours, _ = cv2.findContours(thresh, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
         
         detected_cards = []
         for c in contours:
             area = cv2.contourArea(c)
             # Filter contours by size to match playing card shape
-            if area < 1000:
+            # Avoid the giant yellow border contour (which has area > 8000)
+            if area < 1000 or area > 8000:
                 continue
                 
             x, y, w, h = cv2.boundingRect(c)
             aspect_ratio = float(w)/h
-            # Standard cards aspect ratio is around 0.7, but could be tilted/partially overlapping
-            if aspect_ratio < 0.3 or aspect_ratio > 1.8:
+            # Standard cards aspect ratio is around 0.7
+            if aspect_ratio < 0.4 or aspect_ratio > 1.2:
                 continue
                 
             card_crop = cards_img[y:y+h, x:x+w]
-            rank, suit = self.extract_card(card_crop)
+            rank, suit = self.extract_card(card_crop, is_hand=False)
             # Filter out any detection that lacks a recognized rank 
             # (e.g. face-down card backs or background elements)
             if rank and suit:

@@ -1,8 +1,8 @@
 {
     "ui_roi": {
-        "x": 1245,
+        "x": 1170,
         "y": 220,
-        "width": 435,
+        "width": 510,
         "height": 830
     },
     "bidding_hint_roi": {
@@ -15,13 +15,13 @@
         "x": 1318,
         "y": 600,
         "width": 210,
-        "height": 100
+        "height": 180
     },
     "trick_roi": {
-        "x": 1280,
-        "y": 260,
-        "width": 360,
-        "height": 310
+        "x": 1313,
+        "y": 598,
+        "width": 234,
+        "height": 270
     },
     "player_hand_roi": {
         "x": 1170,
