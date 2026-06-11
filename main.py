@@ -16,6 +16,9 @@ from analyzer import BridgeAnalyzer
 from controller import BridgeController
 from tracker import GameTracker
 import pytesseract
+import csv
+from io import StringIO
+from collections import Counter
 
 def images_are_similar(img1, img2, threshold=1.0):
     """
@@ -56,6 +59,328 @@ def run_capture_debug():
         print("Please run calibration first: python main.py --calibrate")
     except Exception as e:
         print(f"❌ Error during capture: {e}")
+
+def clean_rank_candidate(text):
+    text = text.strip().upper()
+    if not text:
+        return None
+    valid_ranks = {"A", "K", "Q", "J", "T", "10", "9", "8", "7", "6", "5", "4", "3", "2"}
+    if text in valid_ranks:
+        return text
+    misreads = {
+        "0": "Q", "O": "Q", "D": "Q",
+        "1": "T",
+        "J": "J", "L": "J", "I": "J",
+    }
+    if text in misreads:
+        return misreads[text]
+    return None
+
+def detect_dummy_hands(img, analyzer):
+    """
+    Detects dummy hands on all sides (West, East, North) in the full UI capture image.
+    Optimized for real-time execution in the main loop.
+    """
+    if img is None:
+        return {"West": [], "North": [], "East": []}
+        
+    h_img, w_img = img.shape[:2]
+    
+    # 1. Compact dummy text line detection (y=275..310) - TRY FIRST!
+    best_suits = []
+    
+    if h_img >= 310:
+        crop_w = w_img
+        dummy_text_crop = img[275:310, 0:crop_w]
+        gray_dt = cv2.cvtColor(dummy_text_crop, cv2.COLOR_BGR2GRAY)
+        
+        configs = [
+            # (fx, thresh_type, invert, psm)
+            (3.0, "otsu", True, 6),
+            (4.0, "otsu", True, 6),
+        ]
+        
+        for fx_val, thresh_val, invert_val, psm_val in configs:
+            scaled_dt = cv2.resize(gray_dt, (0, 0), fx=fx_val, fy=fx_val, interpolation=cv2.INTER_CUBIC)
+            if thresh_val == "otsu":
+                thresh_dt = cv2.threshold(scaled_dt, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)[1]
+            else:
+                thresh_dt = cv2.threshold(scaled_dt, thresh_val, 255, cv2.THRESH_BINARY)[1]
+                
+            proc_dt = cv2.bitwise_not(thresh_dt) if invert_val else thresh_dt
+            
+            try:
+                txt = pytesseract.image_to_string(proc_dt, config=f"--psm {psm_val}")
+                txt_clean = txt.strip().replace("\n", " ")
+                if not txt_clean:
+                    continue
+                    
+                mapping = {
+                    "0": "Q", "O": "Q", "D": "Q",
+                    "1": "T", "S": "",
+                    "N": "T", "W": "T",
+                    "Z": "",
+                    "E": "6",
+                    "M": "", "B": "", "I": "", "F": "", "H": "", "X": "",
+                }
+                cleaned_ranks = []
+                text_upper = txt_clean.upper().replace("10", "T")
+                for char in text_upper:
+                    if char.isdigit():
+                        cleaned_ranks.append(char)
+                    elif char in mapping:
+                        repl = mapping[char]
+                        if repl:
+                            cleaned_ranks.append(repl)
+                    elif char in ["A", "K", "Q", "J", "T"]:
+                        cleaned_ranks.append(char)
+                        
+                filtered_ranks = []
+                for c in cleaned_ranks:
+                    if not filtered_ranks or filtered_ranks[-1] != c:
+                        filtered_ranks.append(c)
+                        
+                rank_order = {r: idx for idx, r in enumerate(["A", "K", "Q", "J", "T", "9", "8", "7", "6", "5", "4", "3", "2"])}
+                suits = []
+                current_suit = []
+                for r in filtered_ranks:
+                    if r not in rank_order:
+                        continue
+                    if not current_suit:
+                        current_suit.append(r)
+                    else:
+                        prev_r = current_suit[-1]
+                        if rank_order[r] <= rank_order[prev_r]:
+                            suits.append(current_suit)
+                            current_suit = [r]
+                        else:
+                            current_suit.append(r)
+                if current_suit:
+                    suits.append(current_suit)
+                    
+                if len(suits) <= 4:
+                    total_cards = sum(len(s) for s in suits)
+                    # Require exactly 13 cards across 4 suits to ensure it is a complete, valid dummy hand
+                    if total_cards == 13 and len(suits) == 4:
+                        best_suits = suits
+                        break
+            except Exception:
+                pass
+                
+    detected_cards = []
+    
+    if best_suits:
+        # Compact dummy detected successfully! Skip traditional slow contour/global OCR.
+        suits_order = ["spade", "heart", "diamond", "club"]
+        for idx, suit_cards in enumerate(best_suits):
+            if idx >= 4:
+                break
+            suit_name = suits_order[idx]
+            for r in suit_cards:
+                detected_cards.append({
+                    "rank": r,
+                    "suit": suit_name,
+                    "cx": 50 + idx * 100,
+                    "cy": 290,
+                    "bbox": {"x": 50 + idx * 100, "y": 275, "w": 40, "h": 30}
+                })
+        north_dummy = detected_cards
+        return {"West": [], "North": north_dummy, "East": []}
+
+    # If compact detection failed, fall back to fast contour & regional East/West card scans
+    # 2. Fast Contour Block Slicing for North dummy cards (at the top)
+    contour_dummy_cards = []
+    if h_img >= 100:
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        _, thresh = cv2.threshold(gray, 200, 255, cv2.THRESH_BINARY)
+        contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        
+        candidates = []
+        for c in contours:
+            x, y, w, h = cv2.boundingRect(c)
+            if y < 250 and cv2.contourArea(c) > 100 and w < 300 and h < 110:
+                candidates.append((x, y, w, h))
+                
+        candidates.sort()
+        
+        suits_found = {"spade": None, "heart": None, "diamond": None, "club": None}
+        for (x, y, w, h) in candidates:
+            if x < 130:
+                suit = "spade"
+            elif x < 260:
+                suit = "heart"
+            elif x < 380:
+                suit = "diamond"
+            else:
+                suit = "club"
+                
+            existing = suits_found[suit]
+            if existing is None or (w * h) > (existing[2] * existing[3]):
+                suits_found[suit] = (x, y, w, h)
+                
+        for suit in ["spade", "heart", "diamond", "club"]:
+            block = suits_found[suit]
+            if not block:
+                continue
+                
+            bx, by, bw, bh = block
+            if bh < 50 or bw < 50:
+                continue
+                
+            card_w = 55
+            if bw <= 80:
+                num_cards = 1
+            else:
+                num_cards = int(round((bw - 25 - card_w) / 8.5)) + 1
+                
+            step = (bw - 25 - card_w) / (num_cards - 1) if num_cards > 1 else 0
+            card_start_x = bx + 25
+            
+            for i in range(num_cards):
+                cx = int(card_start_x + i * step)
+                rank_crop = img[by+2 : by+28, cx+2 : cx+24]
+                
+                sweep_candidates = []
+                for thresh_val in ["otsu"]:
+                    gray_crop = cv2.cvtColor(rank_crop, cv2.COLOR_BGR2GRAY)
+                    scaled = cv2.resize(gray_crop, (0, 0), fx=4.0, fy=4.0, interpolation=cv2.INTER_CUBIC)
+                    if thresh_val == "otsu":
+                        thresh_crop = cv2.threshold(scaled, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)[1]
+                    else:
+                        thresh_crop = cv2.threshold(scaled, thresh_val, 255, cv2.THRESH_BINARY)[1]
+                    
+                    try:
+                        txt = pytesseract.image_to_string(thresh_crop, config="--psm 10 -c tessedit_char_whitelist=AKQJT1098765432")
+                        r = clean_rank_candidate(txt)
+                        if r:
+                            sweep_candidates.append(r)
+                    except Exception:
+                        pass
+                
+                detected_rank = None
+                if sweep_candidates:
+                    detected_rank = Counter(sweep_candidates).most_common(1)[0][0]
+                    
+                contour_dummy_cards.append({
+                    "rank": detected_rank,
+                    "suit": suit,
+                    "cx": cx + 11,
+                    "cy": by + 13,
+                    "bbox": {"x": cx, "y": by, "w": 55, "h": 85}
+                })
+                
+    detected_cards.extend(contour_dummy_cards)
+    
+    # 3. Regional OCR candidate scanning for East/West dummy cards
+    # We crop the left (West) and right (East) columns to avoid full-screen OCR
+    raw_candidates = []
+    
+    # West area crop: x=0..110, y=180..600
+    # East area crop: x=400..w_img, y=180..600
+    crops = []
+    if h_img >= 600:
+        if w_img >= 110:
+            crops.append(("West", img[180:600, 0:110], 0, 180))
+        if w_img >= 400:
+            crops.append(("East", img[180:600, 400:w_img], 400, 180))
+        
+    for side, crop, offset_x, offset_y in crops:
+        if crop.size == 0:
+            continue
+        gray_crop = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+        
+        for thresh_val, invert, psm in [(200, True, 11)]:
+            _, thresh = cv2.threshold(gray_crop, thresh_val, 255, cv2.THRESH_BINARY)
+            proc = cv2.bitwise_not(thresh) if invert else thresh
+            scaled = cv2.resize(proc, (0, 0), fx=3.0, fy=3.0, interpolation=cv2.INTER_NEAREST)
+            
+            try:
+                data_str = pytesseract.image_to_data(scaled, config=f"--psm {psm}", output_type=pytesseract.Output.STRING)
+                f = StringIO(data_str)
+                reader = csv.reader(f, delimiter='\t')
+                header = next(reader)
+                
+                left_idx = header.index('left')
+                top_idx = header.index('top')
+                width_idx = header.index('width')
+                height_idx = header.index('height')
+                text_idx = header.index('text')
+                conf_idx = header.index('conf')
+                
+                for row in reader:
+                    if len(row) <= text_idx:
+                        continue
+                    text = row[text_idx].strip()
+                    if not text:
+                        continue
+                    conf = float(row[conf_idx])
+                    if conf < 10:
+                        continue
+                    cleaned = clean_rank_candidate(text)
+                    if cleaned:
+                        cx = (int(row[left_idx]) + int(row[width_idx]) // 2) / 3.0 + offset_x
+                        cy = (int(row[top_idx]) + int(row[height_idx]) // 2) / 3.0 + offset_y
+                        raw_candidates.append((cleaned, cx, cy, conf))
+            except Exception:
+                pass
+                
+    unique_candidates = []
+    for cand in raw_candidates:
+        cleaned, cx, cy, conf = cand
+        duplicate = False
+        for idx, (uc_clean, uc_cx, uc_cy, uc_conf) in enumerate(unique_candidates):
+            if abs(cx - uc_cx) < 15 and abs(cy - uc_cy) < 15:
+                duplicate = True
+                if conf > uc_conf:
+                    unique_candidates[idx] = (cleaned, cx, cy, conf)
+                break
+        if not duplicate:
+            unique_candidates.append((cleaned, cx, cy, conf))
+            
+    for rank_hint, cx, cy, conf in unique_candidates:
+        card_w, card_h = 42, 66
+        card_x1 = int(cx - 21)
+        card_y1 = int(cy - 33)
+        card_x2 = card_x1 + card_w
+        card_y2 = card_y1 + card_h
+        
+        card_x1 = max(0, min(card_x1, w_img - 1))
+        card_y1 = max(0, min(card_y1, h_img - 1))
+        card_x2 = max(0, min(card_x2, w_img))
+        card_y2 = max(0, min(card_y2, h_img))
+        
+        if (card_x2 - card_x1) < 20 or (card_y2 - card_y1) < 30:
+            continue
+            
+        card_crop = img[card_y1:card_y2, card_x1:card_x2]
+        rank, suit = analyzer.extract_card(card_crop, is_hand=False)
+        
+        if not rank and suit:
+            rank = rank_hint
+            
+        if rank and suit:
+            detected_cards.append({
+                "rank": rank,
+                "suit": suit,
+                "cx": cx,
+                "cy": cy,
+                "bbox": {"x": card_x1, "y": card_y1, "w": card_x2 - card_x1, "h": card_y2 - card_y1}
+            })
+            
+    west_dummy = []
+    east_dummy = []
+    north_dummy = []
+    
+    for card in detected_cards:
+        cx, cy = card["cx"], card["cy"]
+        if cy < 0.22 * h_img:
+            north_dummy.append(card)
+        elif cx < 0.22 * w_img and 0.22 * h_img <= cy < 0.75 * h_img:
+            west_dummy.append(card)
+        elif cx >= 0.78 * w_img and 0.22 * h_img <= cy < 0.75 * h_img:
+            east_dummy.append(card)
+            
+    return {"West": west_dummy, "North": north_dummy, "East": east_dummy}
 
 def run_analysis(verbose=True):
     """Performs one-off screen capture and analysis."""
@@ -103,6 +428,27 @@ def run_analysis(verbose=True):
             print(f"  {hint_text}")
         else:
             print("  (none)")
+            
+        # 5. Dummy Hands (West, North, East)
+        ui_img = cap.capture_ui()
+        print("\n--- DUMMY HANDS ---")
+        dummy_hands = detect_dummy_hands(ui_img, analyzer)
+        for side in ["West", "North", "East"]:
+            hand = dummy_hands[side]
+            print(f"  {side} Dummy Hand ({len(hand)} cards):")
+            if hand:
+                suits = {"spade": [], "heart": [], "diamond": [], "club": []}
+                for c in hand:
+                    if c["rank"] and c["suit"] in suits:
+                        suits[c["suit"]].append(c["rank"])
+                suit_symbols = {"spade": "♠", "heart": "♥", "diamond": "♦", "club": "♣"}
+                parts = []
+                for s in ["spade", "heart", "diamond", "club"]:
+                    if suits[s]:
+                        parts.append(f"{suit_symbols[s]}: {', '.join(suits[s])}")
+                print("    " + " | ".join(parts))
+            else:
+                print("    None")
             
     except FileNotFoundError as e:
         print(f"❌ Error: {e}")
@@ -251,6 +597,7 @@ def run_monitoring(interval=2.0, verbose=False, save_play=False, output_dir="cap
         bids = []
         detected_trick = []
         valid_hand = []
+        cached_dummy_hands = None
         
         while True:
             # Capture and extract bids
@@ -267,11 +614,11 @@ def run_monitoring(interval=2.0, verbose=False, save_play=False, output_dir="cap
             
             # Check for changes in bids
             if bids != last_bids:
-                print(f"\n📢 Bids changed! {time.strftime('%H:%M:%S')}")
+                print(f"\n📢 Bids changed! {time.strftime('%H:%M:%S')}", flush=True)
                 prev_str = " -> ".join([f"{direction}:{bid}" for direction, bid in last_bids]) if last_bids else "None"
                 curr_str = " -> ".join([f"{direction}:{bid}" for direction, bid in bids]) if bids else "None"
-                print(f"Previous: {prev_str}")
-                print(f"Current : {curr_str}")
+                print(f"Previous: {prev_str}", flush=True)
+                print(f"Current : {curr_str}", flush=True)
                 last_bids = bids
                 
             # Perform trick check
@@ -286,12 +633,45 @@ def run_monitoring(interval=2.0, verbose=False, save_play=False, output_dir="cap
             if save_play and trick_img is not None:
                 tracker.register_trick_state(detected_trick, trick_img.shape[1], trick_img.shape[0])
                 
-            if detected_trick:
-                # Log current trick state
-                trick_str = ", ".join([f"{c['rank'] or '?'}{c['suit'] or '?'}" for c in detected_trick])
-                # We overwrite the line or print on update
-                sys.stdout.write(f"\rCurrent Trick: {trick_str} (Detected {len(detected_trick)} cards)   ")
-                sys.stdout.flush()
+            trick_str = ", ".join([f"{c['rank'] or '?'}{c['suit'] or '?'}" for c in detected_trick]) if detected_trick else "None"
+            
+            # Determine if we are in play stage (has trick cards or bidding has ended)
+            has_trick = len(detected_trick) > 0
+            flat_bids = [b[1] for b in bids]
+            bidding_ended = False
+            if flat_bids:
+                consecutive_passes = 0
+                for b in reversed(flat_bids):
+                    if b.upper() == "PASS":
+                        consecutive_passes += 1
+                    else:
+                        break
+                bidding_ended = (consecutive_passes >= 3) or len(flat_bids) >= 40
+            
+            is_play_stage = has_trick or bidding_ended
+            
+            if is_play_stage:
+                if cached_dummy_hands is not None:
+                    dummy_hands = cached_dummy_hands
+                else:
+                    ui_img = cap.capture_ui()
+                    dummy_hands = detect_dummy_hands(ui_img, analyzer)
+                    total_dummy_cards = sum(len(h) for h in dummy_hands.values())
+                    if total_dummy_cards == 13:
+                        cached_dummy_hands = dummy_hands
+            else:
+                dummy_hands = {"West": [], "North": [], "East": []}
+                cached_dummy_hands = None
+                
+            dummy_parts = []
+            for side in ["West", "North", "East"]:
+                d_hand_str = format_compact_hand(dummy_hands[side])
+                if d_hand_str:
+                    dummy_parts.append(f"{side}={d_hand_str}")
+            dummy_str = " | ".join(dummy_parts) if dummy_parts else "None"
+            
+            sys.stdout.write(f"\rTrick: [{trick_str}] | Dummies: [{dummy_str}]   ")
+            sys.stdout.flush()
                 
             # Track player hand only if saving play
             if save_play:
@@ -309,12 +689,13 @@ def run_monitoring(interval=2.0, verbose=False, save_play=False, output_dir="cap
                 if tracker.initial_hand and not valid_hand:
                     pbn_path, json_path = tracker.save_to_files(output_dir)
                     if pbn_path:
-                        print(f"\n💾 Play saved successfully:\n   - {pbn_path}\n   - {json_path}")
+                        print(f"\n💾 Play saved successfully:\n   - {pbn_path}\n   - {json_path}", flush=True)
                     # Reset for next game
                     tracker = GameTracker()
                     prev_hand_img = None
                     prev_trick_img = None
                     prev_bidding_img = None
+                    cached_dummy_hands = None
                 
             time.sleep(interval)
             
@@ -461,6 +842,7 @@ def run_decision_loop(interval=2.0, dry_run=False, verbose=False, once=False, sa
         valid_hand = []
         trick_cards = []
         current_stage = None
+        cached_dummy_hands = None
         
         while True:
             current_time = time.time()
@@ -521,7 +903,7 @@ def run_decision_loop(interval=2.0, dry_run=False, verbose=False, once=False, sa
             # Log stage transitions
             detected_stage = "Bidding" if is_bidding_active else "Play"
             if detected_stage != current_stage:
-                print(f"\n🔄 [Stage transition: {detected_stage}]")
+                print(f"\n🔄 [Stage transition: {detected_stage}]", flush=True)
                 current_stage = detected_stage
                 
             # Output detection summary for this loop iteration
@@ -530,25 +912,47 @@ def run_decision_loop(interval=2.0, dry_run=False, verbose=False, once=False, sa
             hand_str = format_compact_hand(valid_hand)
             suit_symbols = {"spade": "♠", "heart": "♥", "diamond": "♦", "club": "♣"}
             trick_str = " ".join([f"{c['rank']}{suit_symbols.get(c['suit'], '')}" for c in trick_cards])
-            print(f"📸 Scan: Stage={detected_stage} | Bids=[{bids_str}] | Hand=[{hand_str}] | Trick=[{trick_str}]")
+            
+            # Detect dummy hands
+            if detected_stage == "Play":
+                if cached_dummy_hands is not None:
+                    dummy_hands = cached_dummy_hands
+                else:
+                    ui_img = cap.crop_from_panel(panel_img, cap.config["ui_roi"])
+                    dummy_hands = detect_dummy_hands(ui_img, analyzer)
+                    total_dummy_cards = sum(len(h) for h in dummy_hands.values())
+                    if total_dummy_cards == 13:
+                        cached_dummy_hands = dummy_hands
+            else:
+                dummy_hands = {"West": [], "North": [], "East": []}
+                cached_dummy_hands = None
+                
+            dummy_parts = []
+            for side in ["West", "North", "East"]:
+                d_hand_str = format_compact_hand(dummy_hands[side])
+                if d_hand_str:
+                    dummy_parts.append(f"{side}={d_hand_str}")
+            dummy_str = " | ".join(dummy_parts) if dummy_parts else "None"
+            
+            print(f"📸 Scan: Stage={detected_stage} | Bids=[{bids_str}] | Hand=[{hand_str}] | Trick=[{trick_str}] | Dummies=[{dummy_str}]", flush=True)
 
             # Capture and display hint text (runs every scan, from same panel capture)
             if is_bidding_active:
                 hint_img = cap.crop_from_panel(panel_img, cap.config["bidding_hint_roi"])
                 hint_text = analyzer.extract_bidding_hint(hint_img)
                 if hint_text:
-                    print(f"💡 Hint: {hint_text}")
+                    print(f"💡 Hint: {hint_text}", flush=True)
 
             # If we have no cards left, the board is finished
             if not valid_hand:
                 if current_stage != "Waiting":
-                    print("⏳ Board inactive or hand empty. Waiting...")
+                    print("⏳ Board inactive or hand empty. Waiting...", flush=True)
                     current_stage = "Waiting"
                 # Save captured play if tracker has data
                 if save_play and tracker.initial_hand:
                     pbn_path, json_path = tracker.save_to_files(output_dir)
                     if pbn_path:
-                        print(f"\n💾 Play saved successfully:\n   - {pbn_path}\n   - {json_path}")
+                        print(f"\n💾 Play saved successfully:\n   - {pbn_path}\n   - {json_path}", flush=True)
                     # Reset tracker for the next game
                     tracker = GameTracker()
                 # Reset prev images to force re-evaluation when cards reappear
@@ -556,8 +960,9 @@ def run_decision_loop(interval=2.0, dry_run=False, verbose=False, once=False, sa
                 prev_trick_img = None
                 prev_bidding_img = None
                 last_hinted_state = None
+                cached_dummy_hands = None
                 if once:
-                    print("\nSingle-pass mode complete (no active hand detected).")
+                    print("\nSingle-pass mode complete (no active hand detected).", flush=True)
                     break
                 time.sleep(interval)
                 continue
@@ -672,8 +1077,13 @@ def run_decision_loop(interval=2.0, dry_run=False, verbose=False, once=False, sa
                         # If hand size did not decrease, the click was ignored
                         if len(valid_hand) == last_hand_len:
                             played_in_current_trick = False
-                
-                pass
+                            
+                # If we played a card but it's been more than 5.0 seconds and hand size hasn't changed,
+                # the click was likely ignored or missed, so reset played flag to retry.
+                if played_in_current_trick and current_time - last_action_time > 5.0:
+                    if len(valid_hand) == last_hand_len:
+                        played_in_current_trick = False
+                        print("⚠️ Play timeout: Hand size did not decrease after 5.0s. Retrying...", flush=True)
                 
                 if not played_in_current_trick:
                     # Decide card to play
