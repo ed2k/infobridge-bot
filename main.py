@@ -148,11 +148,11 @@ def detect_dummy_hands(img, analyzer):
             red4 = np.sum((r4.astype(int) > g4.astype(int) + 40) & (r4.astype(int) > b4.astype(int) + 40))
             
             if red3 >= red4:
-                suits_order = ["spade", "heart", "diamond", "club"]
-            else:
                 suits_order = ["spade", "heart", "club", "diamond"]
+            else:
+                suits_order = ["spade", "heart", "diamond", "club"]
         else:
-            suits_order = ["spade", "heart", "diamond", "club"]
+            suits_order = ["spade", "heart", "club", "diamond"]
             
         # Define expected colors
         expected_colors = []
