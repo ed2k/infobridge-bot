@@ -168,41 +168,41 @@ class ScreenCapture:
         """Captures the player's own hand region."""
         return self.capture_region(self.config["player_hand_roi"])
 
-    def save_debug_images(self, output_dir="debug_captures"):
+    def save_debug_images(self, output_dir="debug"):
         """Captures all regions and saves them as images for visual debugging."""
         os.makedirs(output_dir, exist_ok=True)
         try:
             ui = self.capture_ui()
             cv2.imwrite(os.path.join(output_dir, "1_ui_full.png"), ui)
-            print("Saved full UI capture to debug_captures/1_ui_full.png")
+            print("Saved full UI capture to debug/1_ui_full.png")
         except Exception as e:
             print(f"Error capturing UI: {e}")
 
         try:
             bidding = self.capture_bidding()
             cv2.imwrite(os.path.join(output_dir, "2_bidding.png"), bidding)
-            print("Saved bidding capture to debug_captures/2_bidding.png")
+            print("Saved bidding capture to debug/2_bidding.png")
         except Exception as e:
             print(f"Error capturing bidding: {e}")
 
         try:
             trick = self.capture_trick()
             cv2.imwrite(os.path.join(output_dir, "3_trick.png"), trick)
-            print("Saved trick capture to debug_captures/3_trick.png")
+            print("Saved trick capture to debug/3_trick.png")
         except Exception as e:
             print(f"Error capturing trick: {e}")
 
         try:
             hand = self.capture_player_hand()
             cv2.imwrite(os.path.join(output_dir, "4_player_hand.png"), hand)
-            print("Saved player hand capture to debug_captures/4_player_hand.png")
+            print("Saved player hand capture to debug/4_player_hand.png")
         except Exception as e:
             print(f"Error capturing player hand: {e}")
 
         try:
             hint = self.capture_bidding_hint()
             cv2.imwrite(os.path.join(output_dir, "5_bidding_hint.png"), hint)
-            print("Saved bidding hint capture to debug_captures/5_bidding_hint.png")
+            print("Saved bidding hint capture to debug/5_bidding_hint.png")
         except Exception as e:
             print(f"Error capturing bidding hint: {e}")
 

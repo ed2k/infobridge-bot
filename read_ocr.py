@@ -19,7 +19,7 @@ def main():
     print("====================================================")
 
     # 1. Bidding History
-    bidding_path = "debug_captures/2_bidding.png"
+    bidding_path = "debug/2_bidding.png"
     if os.path.exists(bidding_path):
         img = cv2.imread(bidding_path)
         processed = preprocess_img(img)
@@ -34,7 +34,7 @@ def main():
         print(f"❌ {bidding_path} not found.")
 
     # 2. Player's Hand Cards
-    hand_path = "debug_captures/4_player_hand.png"
+    hand_path = "debug/4_player_hand.png"
     if os.path.exists(hand_path):
         img = cv2.imread(hand_path)
         

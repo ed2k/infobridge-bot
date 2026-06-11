@@ -53,7 +53,7 @@ def run_capture_debug():
     try:
         cap = ScreenCapture()
         cap.save_debug_images()
-        print("✅ Captured successfully. Look in the 'debug_captures' folder to check boundaries.")
+        print("✅ Captured successfully. Look in the 'debug' folder to check boundaries.")
     except FileNotFoundError as e:
         print(f"❌ Error: {e}")
         print("Please run calibration first: python main.py --calibrate")
@@ -953,7 +953,7 @@ def main():
     
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--calibrate", action="store_true", help="Run interactive screen calibration utility")
-    group.add_argument("--capture-debug", action="store_true", help="Capture UI regions and save to debug_captures/")
+    group.add_argument("--capture-debug", action="store_true", help="Capture UI regions and save to debug/")
     group.add_argument("--analyze", action="store_true", help="Run OCR/CV analysis on the live screen once")
     group.add_argument("--click", action="store_true", help="Click the contract button (number and suit) using mouse automation")
     group.add_argument("--monitor", action="store_true", help="Start continuous bridge UI state monitor")
