@@ -79,399 +79,51 @@ def clean_rank_candidate(text):
 def detect_dummy_hands(img, analyzer):
     """
     Detects dummy hands on all sides (West, East, North) in the full UI capture image.
-    Optimized for real-time execution in the main loop.
+    North dummy uses the same card detection as player hand (same card layout).
     """
     if img is None:
         return {"West": [], "North": [], "East": []}
         
     h_img, w_img = img.shape[:2]
-    
-    # 1. Compact dummy text line detection (y=275..310) - TRY FIRST!
-    best_total = -1
     detected_cards = []
     
-    if h_img >= 310:
-        crop_w = w_img
-        dummy_text_crop = img[275:310, 0:crop_w]
-        
-        # Determine suit order dynamically by checking colors in the 3rd and 4th groups
-        # First, detect groups to find actual column positions
-        hsv_temp = cv2.cvtColor(dummy_text_crop, cv2.COLOR_BGR2HSV)
-        mask_red_temp = cv2.inRange(hsv_temp, np.array([0, 40, 40]), np.array([25, 255, 255])) + cv2.inRange(hsv_temp, np.array([165, 40, 40]), np.array([180, 255, 255]))
-        gray_temp = cv2.cvtColor(dummy_text_crop, cv2.COLOR_BGR2GRAY)
-        mask_total_temp = (gray_temp < 220)
-        mask_black_temp = mask_total_temp & (mask_red_temp == 0)
-        
-        red_proj_temp = np.sum(mask_red_temp > 0, axis=0)
-        black_proj_temp = np.sum(mask_black_temp > 0, axis=0)
-        
-        # Quick group detection to find column boundaries
-        def quick_groups(active, min_size=30):
-            groups = []
-            in_group = False
-            start = 0
-            for x in range(len(active)):
-                if active[x]:
-                    if not in_group:
-                        in_group = True
-                        start = x
-                else:
-                    if in_group:
-                        in_group = False
-                        if groups and (start - groups[-1][1]) < 40:
-                            groups[-1] = (groups[-1][0], x - 1)
-                        else:
-                            groups.append((start, x - 1))
-            if in_group:
-                if groups and (start - groups[-1][1]) < 40:
-                    groups[-1] = (groups[-1][0], len(active) - 1)
-                else:
-                    groups.append((start, len(active) - 1))
-            return [(s, e) for s, e in groups if (e - s + 1) >= min_size]
-        
-        red_active_temp = (red_proj_temp > 1)
-        black_active_temp = (black_proj_temp > 1)
-        all_quick_groups = sorted(quick_groups(red_active_temp) + quick_groups(black_active_temp))
-        
-        if len(all_quick_groups) >= 4:
-            # Check colors in 3rd and 4th columns to determine suit order
-            g3_x1, g3_x2 = all_quick_groups[2]
-            g4_x1, g4_x2 = all_quick_groups[3]
-            
-            crop_col3 = dummy_text_crop[:, g3_x1:g3_x2]
-            crop_col4 = dummy_text_crop[:, g4_x1:g4_x2]
-            
-            b3, g3, r3 = cv2.split(crop_col3)
-            red3 = np.sum((r3.astype(int) > g3.astype(int) + 40) & (r3.astype(int) > b3.astype(int) + 40))
-            
-            b4, g4, r4 = cv2.split(crop_col4)
-            red4 = np.sum((r4.astype(int) > g4.astype(int) + 40) & (r4.astype(int) > b4.astype(int) + 40))
-            
-            if red3 >= red4:
-                suits_order = ["spade", "heart", "club", "diamond"]
-            else:
-                suits_order = ["spade", "heart", "diamond", "club"]
-        else:
-            suits_order = ["spade", "heart", "club", "diamond"]
-            
-        # Define expected colors
-        expected_colors = []
-        for suit in suits_order:
-            if suit in ["spade", "club"]:
-                expected_colors.append("BLACK")
-            else:
-                expected_colors.append("RED")
-                
-        # Define RED mask (Hearts/Diamonds)
-        hsv = cv2.cvtColor(dummy_text_crop, cv2.COLOR_BGR2HSV)
-        lower_red1 = np.array([0, 40, 40])
-        upper_red1 = np.array([25, 255, 255])
-        lower_red2 = np.array([165, 40, 40])
-        upper_red2 = np.array([180, 255, 255])
-        mask_red = cv2.inRange(hsv, lower_red1, upper_red1) + cv2.inRange(hsv, lower_red2, upper_red2)
-        
-        # Define BLACK mask dynamically as any text pixel (gray < 220) that is not red
-        gray_crop = cv2.cvtColor(dummy_text_crop, cv2.COLOR_BGR2GRAY)
-        mask_total = (gray_crop < 220)
-        mask_black = mask_total & (mask_red == 0)
-        
-        red_proj = np.sum(mask_red > 0, axis=0)
-        black_proj = np.sum(mask_black > 0, axis=0)
-        total_proj = red_proj + black_proj
-        
-        # Solid borders
-        is_border = (total_proj >= 30)
-        edge_mask = np.zeros_like(is_border)
-        edge_mask[:5] = True
-        edge_mask[crop_w - 5:] = True
-        
-        red_active = (red_proj > 1) & (~is_border) & (~edge_mask)
-        black_active = (black_proj > 1) & (~is_border) & (~edge_mask)
-        
-        def get_groups(active_array, color_name):
-            groups = []
-            in_group = False
-            start = 0
-            for x in range(len(active_array)):
-                if active_array[x]:
-                    if not in_group:
-                        in_group = True
-                        start = x
-                else:
-                    if in_group:
-                        in_group = False
-                        if groups and (start - groups[-1][1]) < 40:
-                            groups[-1] = (groups[-1][0], x - 1)
-                        else:
-                            groups.append((start, x - 1))
-            if in_group:
-                if groups and (start - groups[-1][1]) < 40:
-                    groups[-1] = (groups[-1][0], len(active_array) - 1)
-                else:
-                    groups.append((start, len(active_array) - 1))
-            return [(s, e, color_name) for s, e in groups if (e - s + 1) >= 5]
-            
-        red_groups = get_groups(red_active, "RED")
-        black_groups = get_groups(black_active, "BLACK")
-        
-        all_groups = sorted(red_groups + black_groups)
-        
-        configs = [
-            (4.0, "otsu", True, 6),
-            (3.0, "otsu", True, 6),
-        ]
-        
-        for fx_val, thresh_val, invert_val, psm_val in configs:
-            current_detected = []
-            
-            # Match groups to suits by position
-            # Sort groups by x position and assign suits sequentially
-            sorted_groups = sorted(all_groups, key=lambda g: g[0])
-            
-            # Assign suits based on position using suits_order
-            matched_suits = {suit: None for suit in suits_order}
-            
-            for i, suit_name in enumerate(suits_order):
-                if i < len(sorted_groups):
-                    matched_suits[suit_name] = (sorted_groups[i][0], sorted_groups[i][1])
-                        
-            for suit_name in suits_order:
-                bounds = matched_suits[suit_name]
-                if bounds is None:
-                    continue
-                    
-                x1, x2 = bounds
-                x1_pad = max(0, x1 - 3)
-                x2_pad = min(crop_w, x2 + 3)
-                
-                col_crop = dummy_text_crop[:, x1_pad:x2_pad]
-                col_gray = cv2.cvtColor(col_crop, cv2.COLOR_BGR2GRAY)
-                
-                scaled = cv2.resize(col_gray, (0, 0), fx=fx_val, fy=fx_val, interpolation=cv2.INTER_CUBIC)
-                if thresh_val == "otsu":
-                    thresh = cv2.threshold(scaled, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)[1]
-                else:
-                    thresh = cv2.threshold(scaled, thresh_val, 255, cv2.THRESH_BINARY)[1]
-                    
-                proc = cv2.bitwise_not(thresh) if invert_val else thresh
-                
-                try:
-                    txt = pytesseract.image_to_string(proc, config=f"--psm {psm_val}")
-                    
-                    mapping = {
-                        "0": "Q", "O": "Q", "D": "Q",
-                        "S": "J", "N": "T", "W": "T",
-                        "Z": "", "E": "6",
-                        "M": "", "B": "", "I": "", "F": "", "H": "", "X": "",
-                    }
-                    cleaned = []
-                    text_upper = txt.strip().upper().replace("\n", "").replace(" ", "").replace("10", "T")
-                    for char in text_upper:
-                        if char in mapping:
-                            repl = mapping[char]
-                            if repl:
-                                cleaned.append(repl)
-                        elif char.isdigit() or char in ["A", "K", "Q", "J", "T"]:
-                            cleaned.append(char)
-                            
-                    filtered = []
-                    for c in cleaned:
-                        if not filtered or filtered[-1] != c:
-                            filtered.append(c)
-                            
-                    rank_order = ["A", "K", "Q", "J", "T", "9", "8", "7", "6", "5", "4", "3", "2"]
-                    suit_cards = [r for r in filtered if r in rank_order]
-                    
-                    for r in suit_cards:
-                        current_detected.append({
-                            "rank": r,
-                            "suit": suit_name,
-                            "cx": int(x1 + (x2 - x1) / 2),
-                            "cy": 290,
-                            "bbox": {"x": x1, "y": 275, "w": x2 - x1, "h": 30}
-                        })
-                except Exception:
-                    pass
-            
-            total_cards = len(current_detected)
-            if 0 < total_cards <= 13:
-                if total_cards > best_total:
-                    best_total = total_cards
-                    detected_cards = current_detected
-                    if total_cards == 13:
-                        break
-                        
-        if best_total > 0:
-            north_dummy = detected_cards
-            return {"West": [], "North": north_dummy, "East": []}
-
-
-    # If compact detection failed, fall back to color profile peak detection (like player cards)
-    # 2. Color Profile Peak Detection for North dummy cards (at the top)
-    # This method uses the same approach as player card detection: find peaks in color profile
-    contour_dummy_cards = []
-    if h_img >= 100:
-        # Crop the dummy area (top portion of UI)
-        dummy_area = img[0:min(250, h_img), 0:w_img]
-        
-        # Normalize to height 60 like player cards
-        target_h = 60
-        scale = target_h / dummy_area.shape[0] if dummy_area.shape[0] != target_h else 1.0
-        if scale != 1.0:
-            dummy_area_norm = cv2.resize(dummy_area, (0, 0), fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
-        else:
-            dummy_area_norm = dummy_area.copy()
-        
-        h_norm, w_norm = dummy_area_norm.shape[:2]
-        
-        # HSV color masks (same as player card detection)
-        hsv = cv2.cvtColor(dummy_area_norm, cv2.COLOR_BGR2HSV)
-        lower_red1 = np.array([0, 40, 40])
-        upper_red1 = np.array([25, 255, 255])
-        lower_red2 = np.array([165, 40, 40])
-        upper_red2 = np.array([180, 255, 255])
-        mask_red = cv2.inRange(hsv, lower_red1, upper_red1) + cv2.inRange(hsv, lower_red2, upper_red2)
-        mask_black = cv2.inRange(hsv, np.array([0, 0, 0]), np.array([180, 60, 100]))
-        mask_suit = mask_red + mask_black
-        
-        # 1D profile of suit row (y=41..54) - same as player cards
-        suit_row_start = int(target_h * 0.68)
-        suit_row_end = int(target_h * 0.90)
-        profile = np.sum(mask_suit[suit_row_start:suit_row_end, :] > 0, axis=0).astype(np.float32)
-        
-        # Apply 1D smoothing (same kernel as player cards)
-        kernel_size = max(7, int(w_norm * 0.015) | 1)
-        if kernel_size % 2 == 0:
-            kernel_size += 1
-        kernel = np.ones(kernel_size) / float(kernel_size)
-        smoothed = np.convolve(profile, kernel, mode='same')
-        
-        # Peak detection on smoothed profile
-        peaks = []
-        min_dist = 10
-        for x in range(0, len(smoothed)):
-            val = smoothed[x]
-            if val >= 1.0:
-                is_max = True
-                for dx in range(-min_dist, min_dist + 1):
-                    nx = x + dx
-                    if 0 <= nx < len(smoothed) and smoothed[nx] > val:
-                        is_max = False
-                        break
-                if is_max:
-                    if not peaks or (x - peaks[-1]["x_suit"]) >= min_dist:
-                        col_red = np.sum(mask_red[suit_row_start:suit_row_end, x] > 0)
-                        col_black = np.sum(mask_black[suit_row_start:suit_row_end, x] > 0)
-                        color = "RED" if col_red >= col_black else "BLACK"
-                        peaks.append({"x_suit": x, "color": color})
-        
-        # Map x position to suit (North dummy: left to right = spade, heart, diamond/club)
-        # Determine suit order dynamically by checking colors in columns 3 and 4
-        crop_w = w_img
-        col3_x1 = int(220 * (crop_w / 510.0))
-        col3_x2 = int(330 * (crop_w / 510.0))
-        col4_x1 = int(330 * (crop_w / 510.0))
-        col4_x2 = int(480 * (crop_w / 510.0))
-        
-        # Check colors in columns 3 and 4 to determine suit order
-        dummy_text_crop = img[275:310, 0:crop_w] if h_img >= 310 else dummy_area
-        crop_col3 = dummy_text_crop[:, col3_x1:col3_x2]
-        crop_col4 = dummy_text_crop[:, col4_x1:col4_x2]
-        
-        b3, g3, r3 = cv2.split(crop_col3)
-        red3 = np.sum((r3.astype(int) > g3.astype(int) + 40) & (r3.astype(int) > b3.astype(int) + 40))
-        
-        b4, g4, r4 = cv2.split(crop_col4)
-        red4 = np.sum((r4.astype(int) > g4.astype(int) + 40) & (r4.astype(int) > b4.astype(int) + 40))
-        
-        if red3 >= red4:
-            suits_order = ["spade", "heart", "diamond", "club"]
-        else:
-            suits_order = ["spade", "heart", "club", "diamond"]
-        
-        # Map x position to suit based on peaks
-        # Use equal-width columns for North dummy (spade, heart, diamond, club)
-        col_width = w_img // 4
-        suit_columns = {
-            "spade": (0, col_width),
-            "heart": (col_width, col_width * 2),
-            "diamond": (col_width * 2, col_width * 3),
-            "club": (col_width * 3, w_img)
-        }
-        
-        # Reorder columns based on detected suit order
-        suit_columns_ordered = [
-            (suits_order[0], suit_columns["spade"]),
-            (suits_order[1], suit_columns["heart"]),
-            (suits_order[2], suit_columns[suits_order[2]]),
-            (suits_order[3], suit_columns[suits_order[3]])
-        ]
-        
-        for p in peaks:
-            # Convert peak x to original image coordinates
-            x_orig = int(p["x_suit"] / scale)
-            
-            # Determine suit from x position
-            detected_suit = None
-            for suit_name, (x_start, x_end) in suit_columns_ordered:
-                if x_start <= x_orig < x_end:
-                    detected_suit = suit_name
-                    break
-            
-            if not detected_suit:
-                # Default mapping based on equal-width columns
-                col_width = w_img // 4
-                if x_orig < col_width:
-                    detected_suit = "spade"
-                elif x_orig < col_width * 2:
-                    detected_suit = "heart"
-                elif x_orig < col_width * 3:
-                    detected_suit = "diamond"
-                else:
-                    detected_suit = "club"
-            
-            # Crop card centered on peak (same as player cards)
-            x_card = max(0, p["x_suit"] - 15)
-            card_crop = dummy_area_norm[0:target_h, x_card:min(x_card + 40, w_norm)]
-            
-            # Extract rank using OCR
-            rank_crop = card_crop[9:35, 6:24] if target_h == 60 else card_crop[2:int(target_h*0.43), 5:int(40*0.45)]
-            
-            rank_text = None
-            for fx_val in [5.0, 4.0, 3.0]:
-                gray_crop = cv2.cvtColor(rank_crop, cv2.COLOR_BGR2GRAY)
-                scaled = cv2.resize(gray_crop, (0, 0), fx=fx_val, fy=fx_val, interpolation=cv2.INTER_CUBIC)
-                thresh_crop = cv2.threshold(scaled, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)[1]
-                
-                try:
-                    txt = pytesseract.image_to_string(thresh_crop, config="--psm 10 -c tessedit_char_whitelist=AKQJT1098765432")
-                    rank_text = clean_rank_candidate(txt)
-                    if rank_text:
-                        break
-                except Exception:
-                    pass
-            
-            contour_dummy_cards.append({
-                "rank": rank_text,
-                "suit": detected_suit,
-                "cx": x_orig + 20,
-                "cy": 125,
-                "bbox": {"x": int(x_card / scale), "y": 0, "w": int(40 / scale), "h": int(target_h / scale)}
-            })
-    detected_cards.extend(contour_dummy_cards)
+    # 1. North dummy: Same layout as player hand (one row of cards)
+    # The dummy card strip is at y=240..340 in the UI
+    if h_img >= 340:
+        dummy_strip = img[240:340, 0:w_img]
+        try:
+            north_cards = analyzer.extract_hand_cards(dummy_strip)
+            # Adjust coordinates to full image
+            for card in north_cards:
+                if card.get("rank") and card.get("suit"):
+                    bbox = card.get("bbox", {})
+                    detected_cards.append({
+                        "rank": card["rank"],
+                        "suit": card["suit"],
+                        "cx": bbox.get("x", 0) + bbox.get("w", 0) // 2,
+                        "cy": 240 + bbox.get("y", 0) + bbox.get("h", 0) // 2,
+                        "bbox": {
+                            "x": bbox.get("x", 0),
+                            "y": bbox.get("y", 0) + 240,
+                            "w": bbox.get("w", 0),
+                            "h": bbox.get("h", 0)
+                        }
+                    })
+        except Exception:
+            pass
     
-    # 3. Regional OCR candidate scanning for East/West dummy cards
+    # 2. East/West dummy: Regional OCR
     # We crop the left (West) and right (East) columns to avoid full-screen OCR
     raw_candidates = []
     
-    # West area crop: x=0..110, y=180..600
-    # East area crop: x=400..w_img, y=180..600
+    # West area crop: x=0..110, y=350..600 (below North dummy)
+    # East area crop: x=400..w_img, y=350..600 (below North dummy)
     crops = []
     if h_img >= 600:
         if w_img >= 110:
-            crops.append(("West", img[180:600, 0:110], 0, 180))
+            crops.append(("West", img[350:600, 0:110], 0, 350))
         if w_img >= 400:
-            crops.append(("East", img[180:600, 400:w_img], 400, 180))
+            crops.append(("East", img[350:600, 400:w_img], 400, 350))
         
     for side, crop, offset_x, offset_y in crops:
         if crop.size == 0:
@@ -562,7 +214,8 @@ def detect_dummy_hands(img, analyzer):
     
     for card in detected_cards:
         cx, cy = card["cx"], card["cy"]
-        if cy < 0.22 * h_img:
+        # North dummy cards are at y=240..340
+        if 220 <= cy <= 360:
             north_dummy.append(card)
         elif cx < 0.22 * w_img and 0.22 * h_img <= cy < 0.75 * h_img:
             west_dummy.append(card)
