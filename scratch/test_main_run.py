@@ -33,6 +33,18 @@ class MockScreenCapture:
     def capture_ui(self):
         return self.img
 
+    def capture_bidding(self):
+        return self.crop_from_panel(self.img, self.config["bidding_roi"])
+        
+    def capture_player_hand(self):
+        return self.crop_from_panel(self.img, self.config["player_hand_roi"])
+        
+    def capture_trick(self):
+        return self.crop_from_panel(self.img, self.config["trick_roi"])
+        
+    def capture_bidding_hint(self):
+        return self.crop_from_panel(self.img, self.config["bidding_hint_roi"])
+
 def main_test():
     # Mock ScreenCapture inside main.py
     main.ScreenCapture = MockScreenCapture
