@@ -25,14 +25,29 @@ def clean_rank_candidate(text):
 
 def main():
     analyzer = BridgeAnalyzer(verbose=False)
-    cap = ScreenCapture()
-    img = cap.capture_ui()
+    
+    img = None
+    import sys
+    if len(sys.argv) > 1:
+        img_path = sys.argv[1]
+        print(f"Loading image from file: {img_path}")
+        img = cv2.imread(img_path)
+    else:
+        try:
+            cap = ScreenCapture()
+            img = cap.capture_ui()
+        except Exception as e:
+            print(f"Capture failed: {e}")
+            
     if img is None:
-        print("Error: Could not capture live UI")
+        fallback = "debug_captures/live_ui_all_sides.png"
+        if os.path.exists(fallback):
+            print(f"Falling back to local image: {fallback}")
+            img = cv2.imread(fallback)
+            
+    if img is None:
+        print("Error: Could not capture live UI or load fallback")
         return
-        
-    os.makedirs("debug_captures", exist_ok=True)
-    cv2.imwrite("debug_captures/live_ui_all_sides.png", img)
         
     h_img, w_img = img.shape[:2]
     print(f"Captured live UI: {w_img}x{h_img}")
@@ -133,6 +148,7 @@ def main():
     # ----------------------------------------------------
     # Detect North Dummy Hand using Contour Block Slicing
     # ----------------------------------------------------
+    contour_dummy_cards = []
     _, thresh = cv2.threshold(gray, 200, 255, cv2.THRESH_BINARY)
     contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     
@@ -208,13 +224,129 @@ def main():
                 from collections import Counter
                 detected_rank = Counter(sweep_candidates).most_common(1)[0][0]
                 
-            detected_cards.append({
+            contour_dummy_cards.append({
                 "rank": detected_rank,
                 "suit": suit,
                 "cx": cx + 11,
                 "cy": by + 13,
                 "bbox": {"x": cx, "y": by, "w": 55, "h": 85}
             })
+            
+    # ----------------------------------------------------
+    # Detect Dummy Hand from compact Text Line (y=275..310)
+    # ----------------------------------------------------
+    best_suits = []
+    best_text = ""
+    
+    crop_w = w_img
+    dummy_text_crop = img[275:310, 0:crop_w]
+    gray_dt = cv2.cvtColor(dummy_text_crop, cv2.COLOR_BGR2GRAY)
+    
+    # Sweep parameters to find a clean 13-card hand representation
+    configs = [
+        # (fx, thresh_type, invert, psm)
+        (3.0, "otsu", True, 6),
+        (3.0, "otsu", True, 7),
+        (5.0, "otsu", True, 6),
+        (5.0, "otsu", True, 7),
+        (4.0, "otsu", True, 6),
+        (4.0, "otsu", True, 7),
+        (3.0, 150, True, 6),
+        (3.0, 127, False, 6),
+    ]
+    
+    for fx_val, thresh_val, invert_val, psm_val in configs:
+        scaled_dt = cv2.resize(gray_dt, (0, 0), fx=fx_val, fy=fx_val, interpolation=cv2.INTER_CUBIC)
+        if thresh_val == "otsu":
+            thresh_dt = cv2.threshold(scaled_dt, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)[1]
+        else:
+            thresh_dt = cv2.threshold(scaled_dt, thresh_val, 255, cv2.THRESH_BINARY)[1]
+            
+        proc_dt = cv2.bitwise_not(thresh_dt) if invert_val else thresh_dt
+        
+        try:
+            txt = pytesseract.image_to_string(proc_dt, config=f"--psm {psm_val}")
+            txt_clean = txt.strip().replace("\n", " ")
+            if not txt_clean:
+                continue
+                
+            mapping = {
+                "0": "Q", "O": "Q", "D": "Q",
+                "1": "T", "S": "",
+                "N": "T", "W": "T",
+                "Z": "",
+                "E": "6",
+                "M": "", "B": "", "I": "", "F": "", "H": "", "X": "",
+            }
+            cleaned_ranks = []
+            text_upper = txt_clean.upper().replace("10", "T")
+            for char in text_upper:
+                if char.isdigit():
+                    cleaned_ranks.append(char)
+                elif char in mapping:
+                    repl = mapping[char]
+                    if repl:
+                        cleaned_ranks.append(repl)
+                elif char in ["A", "K", "Q", "J", "T"]:
+                    cleaned_ranks.append(char)
+                    
+            # Remove adjacent duplicates
+            filtered_ranks = []
+            for c in cleaned_ranks:
+                if not filtered_ranks or filtered_ranks[-1] != c:
+                    filtered_ranks.append(c)
+                    
+            # Split into suits using descending order rule
+            rank_order = {r: idx for idx, r in enumerate(["A", "K", "Q", "J", "T", "9", "8", "7", "6", "5", "4", "3", "2"])}
+            suits = []
+            current_suit = []
+            for r in filtered_ranks:
+                if r not in rank_order:
+                    continue
+                if not current_suit:
+                    current_suit.append(r)
+                else:
+                    prev_r = current_suit[-1]
+                    if rank_order[r] <= rank_order[prev_r]:
+                        suits.append(current_suit)
+                        current_suit = [r]
+                    else:
+                        current_suit.append(r)
+            if current_suit:
+                suits.append(current_suit)
+                
+            if len(suits) <= 4:
+                total_cards = sum(len(s) for s in suits)
+                if total_cards == 13 and len(suits) == 4:
+                    best_suits = suits
+                    best_text = txt_clean
+                    break
+                elif total_cards < 13:
+                    if not best_suits or total_cards > sum(len(s) for s in best_suits):
+                        best_suits = suits
+                        best_text = txt_clean
+        except Exception:
+            pass
+            
+    if best_suits:
+        print(f"Detected compact dummy hand text: '{best_text}'")
+        suits_order = ["spade", "heart", "diamond", "club"]
+        for idx, suit_cards in enumerate(best_suits):
+            if idx >= 4:
+                break
+            suit_name = suits_order[idx]
+            for r in suit_cards:
+                detected_cards.append({
+                    "rank": r,
+                    "suit": suit_name,
+                    "cx": 50 + idx * 100,
+                    "cy": 290,
+                    "bbox": {"x": 50 + idx * 100, "y": 275, "w": 40, "h": 30}
+                })
+    else:
+        # Fall back to contour block slicing detections
+        print("Compact dummy hand text not detected, falling back to contour cards.")
+        detected_cards.extend(contour_dummy_cards)
             
     west_dummy = []
     east_dummy = []
@@ -225,7 +357,9 @@ def main():
     
     for card in detected_cards:
         cx, cy = card["cx"], card["cy"]
-        if cy >= 0.75 * h_img:
+        if card.get("bbox", {}).get("y") == 275:
+            north_dummy.append(card)
+        elif cy >= 0.75 * h_img:
             south_hand.append(card)
         elif cy < 0.22 * h_img:
             north_dummy.append(card)
