@@ -541,7 +541,7 @@ class BridgeAnalyzer:
             return best_match
         return None
 
-    def extract_card(self, card_img, is_hand=True):
+    def extract_card(self, card_img, is_hand=True, suit_img=None, suit_img_top=None, expected_suit_is_red=None):
         """
         Parses a single card image crop.
         Returns a tuple (rank, suit) or (None, None).
@@ -553,8 +553,14 @@ class BridgeAnalyzer:
         # For normalized hand crops (height 60), we use centered crops where x_suit is at x=15.
         # This keeps the rank and suit perfectly centered and avoids bottom-of-rank pixels contaminating templates.
         if h == 60:
-            rank_crop = card_img[9:35, 6:24]
-            suit_crop = card_img[24:55, 6:24]
+            # Full top half captures rank reliably for loose spacing (player hand)
+            # Narrower crop avoids adjacent-card bleed for tight spacing (dummy)
+            if "tight" in self.__dict__ and self.tight:
+                rank_crop = card_img[2:30, 2:28]
+            else:
+                rank_crop = card_img[2:30, 2:36]
+            # Wider bottom area to capture suit symbol (may be offset due to card overlap)
+            suit_crop = card_img[30:55, 2:35]
         elif is_hand:
             # Overlapping cards: rank and suit are on the left
             rank_crop = card_img[2:int(h*0.43), 5:int(w*0.45)]
@@ -638,13 +644,33 @@ class BridgeAnalyzer:
                 if rank_text == "9" and right_ink > left_ink * 1.5:
                     rank_text = "Q"
             
-        # Extract Suit
+        # Extract Suit — use provided suit_img (from card's left edge) if available
+        suit_crop_for_match = suit_img if suit_img is not None else suit_crop
         suit = None
         if self.suit_templates:
-            suit = self.classify_suit_template_matching(suit_crop)
+            suit = self.classify_suit_template_matching(suit_crop_for_match)
+            # Cross-check template result against expected color from peak detection
+            if suit and expected_suit_is_red is not None:
+                template_is_red = suit in ("heart", "diamond")
+                if template_is_red != expected_suit_is_red:
+                    suit = None
             
         if not suit:
-            suit = self.classify_suit_by_color_shape(suit_crop)
+            # Try the top-area crop as fallback (less overlap interference)
+            if suit_img_top is not None:
+                suit_top = suit_img_top
+                if self.suit_templates:
+                    top_suit = self.classify_suit_template_matching(suit_top)
+                    if top_suit and expected_suit_is_red is not None:
+                        top_is_red = top_suit in ("heart", "diamond")
+                        if top_is_red == expected_suit_is_red:
+                            suit = top_suit
+                    elif top_suit:
+                        suit = top_suit
+                if not suit:
+                    suit = self.classify_suit_by_color_shape(suit_top)
+            if not suit:
+                suit = self.classify_suit_by_color_shape(suit_crop_for_match)
             
         return rank_text, suit
 
@@ -715,6 +741,9 @@ class BridgeAnalyzer:
             x_card = int(x_start + i * step)
             card_crop = hand_img[0:h_strip, x_card:min(x_card + 40, hand_img.shape[1])]
             rank, suit = self.extract_card(card_crop)
+            import os
+            os.makedirs("debug", exist_ok=True)
+            cv2.imwrite(f"debug/card_crop_linear_{i}_{rank}{suit}.png", card_crop)
             detected_cards.append({
                 "rank": rank,
                 "suit": suit,
@@ -752,6 +781,9 @@ class BridgeAnalyzer:
             hand_img = hand_img[y_start:y_end+1, :]
             h_strip = hand_img.shape[0]
             y_start_orig = y_start
+        
+        # Save cropped (but not yet resized) version for global OCR
+        hand_img_cropped = hand_img.copy()
             
         # Normalize hand image height to 60 to match suit template scaling
         scale = 1.0
@@ -815,17 +847,45 @@ class BridgeAnalyzer:
             return self.extract_hand_cards_linear(hand_img, scale=scale, y_start=y_start_orig)
             
         detected_cards = []
-        for p in peaks:
+
+        peak_xs = [p["x_suit"] for p in peaks]
+
+        # Determine whether spacing is tight (dummy-style) or loose (player hand)
+        if len(peaks) >= 2:
+            gaps = [peak_xs[i+1] - peak_xs[i] for i in range(len(peaks) - 1)]
+            avg_spacing = sum(gaps) / len(gaps)
+            self.tight = avg_spacing <= 35
+        else:
+            self.tight = False
+
+        _, white_binary = cv2.threshold(
+            cv2.cvtColor(hand_img, cv2.COLOR_BGR2GRAY), 200, 255, cv2.THRESH_BINARY)
+        col_white = np.sum(white_binary > 0, axis=0)
+        first_white = int(np.where(col_white > 10)[0][0])
+
+        for idx, p in enumerate(peaks):
             # Crop card centered: x_card goes from p["x_suit"] - 15 to p["x_suit"] + 25 (width 40)
             x_card = max(0, p["x_suit"] - 15)
             card_crop = hand_img[0:60, x_card:min(x_card + 40, w_strip)]
-            
-            rank, suit = self.extract_card(card_crop)
-            
+
+            # Suit crop centered on suit peak
+            suit_left = max(0, p["x_suit"] - 15)
+            suit_crop_wide = hand_img[30:55, suit_left:min(suit_left + 40, w_strip)]
+
+            # Also prepare a top-area suit crop as fallback (less overlap interference)
+            suit_top = hand_img[3:22, suit_left:min(suit_left + 40, w_strip)]
+
+            rank, suit_raw = self.extract_card(card_crop, suit_img=suit_crop_wide, suit_img_top=suit_top, expected_suit_is_red=p["color"] == "RED")
+            suit = suit_raw or ("heart" if p["color"] == "RED" else "spade")
+
+            # Save debug crops
+            os.makedirs("debug", exist_ok=True)
+            cv2.imwrite(f"debug/card_crop_{idx}_{rank}{suit}.png", card_crop)
+
             # If suit is None, fall back to color-based default
             if not suit:
                 suit = "heart" if p["color"] == "RED" else "spade"
-                
+
             detected_cards.append({
                 "rank": rank,
                 "suit": suit,
@@ -836,6 +896,24 @@ class BridgeAnalyzer:
                     "h": int(60.0 / scale)
                 }
             })
+            
+        # Try global OCR on the cropped (full-res) hand strip for ranks (more accurate than per-card)
+        if len(detected_cards) >= 10:
+            try:
+                import pytesseract as pt
+                gray_strip = cv2.cvtColor(hand_img_cropped, cv2.COLOR_BGR2GRAY)
+                scaled_strip = cv2.resize(gray_strip, (0, 0), fx=3, fy=3, interpolation=cv2.INTER_CUBIC)
+                thresh_strip = cv2.threshold(scaled_strip, 127, 255, cv2.THRESH_BINARY)[1]
+                raw = pt.image_to_string(thresh_strip, config="--psm 11 -c tessedit_char_whitelist=AKQJT9876543210").strip()
+                global_ranks = [c for c in raw if c in "AKQJT9876543210"]
+                if len(global_ranks) >= len(detected_cards):
+                    global_ranks = global_ranks[:len(detected_cards)]
+                    if self.verbose:
+                        print(f"Global OCR ranks: {''.join(global_ranks)}")
+                    for i, c in enumerate(detected_cards):
+                        c["rank"] = global_ranks[i]
+            except Exception:
+                pass
             
         return detected_cards
 

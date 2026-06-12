@@ -92,6 +92,9 @@ def detect_dummy_hands(img, analyzer):
     if h_img >= 340:
         dummy_strip = img[240:340, 0:w_img]
         try:
+            import os
+            os.makedirs("debug", exist_ok=True)
+            cv2.imwrite("debug/dummy_strip_north.png", dummy_strip)
             north_cards = analyzer.extract_hand_cards(dummy_strip)
             # Adjust coordinates to full image
             for card in north_cards:
@@ -121,9 +124,13 @@ def detect_dummy_hands(img, analyzer):
     crops = []
     if h_img >= 600:
         if w_img >= 110:
-            crops.append(("West", img[350:600, 0:110], 0, 350))
+            west_crop = img[350:600, 0:110]
+            crops.append(("West", west_crop, 0, 350))
+            cv2.imwrite("debug/dummy_strip_west.png", west_crop)
         if w_img >= 400:
-            crops.append(("East", img[350:600, 400:w_img], 400, 350))
+            east_crop = img[350:600, 400:w_img]
+            crops.append(("East", east_crop, 400, 350))
+            cv2.imwrite("debug/dummy_strip_east.png", east_crop)
         
     for side, crop, offset_x, offset_y in crops:
         if crop.size == 0:
@@ -196,6 +203,8 @@ def detect_dummy_hands(img, analyzer):
         card_crop = img[card_y1:card_y2, card_x1:card_x2]
         rank, suit = analyzer.extract_card(card_crop, is_hand=False)
         
+        cv2.imwrite(f"debug/dummy_card_{side}_{rank}{suit}.png", card_crop)
+        
         if not rank and suit:
             rank = rank_hint
             
@@ -254,6 +263,8 @@ def run_analysis(verbose=True):
 
         # 3. Player's Hand
         hand_img = cap.capture_player_hand()
+        import os; os.makedirs("debug", exist_ok=True)
+        cv2.imwrite("debug/player_hand_area.png", hand_img)
         detected_hand = analyzer.extract_hand_cards(hand_img)
         print("\n--- PLAYER HAND CARDS ---")
         if detected_hand:
@@ -692,6 +703,8 @@ def run_decision_loop(interval=2.0, dry_run=False, verbose=False, once=False, sa
             
             # 2. Capture Hand
             hand_img = cap.capture_player_hand()
+            import os; os.makedirs("debug", exist_ok=True)
+            cv2.imwrite("debug/player_hand_area.png", hand_img)
             if prev_hand_img is not None and images_are_similar(prev_hand_img, hand_img, threshold=1.0):
                 pass
             else:
