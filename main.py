@@ -80,6 +80,7 @@ def detect_dummy_hands(img, analyzer):
     """
     Detects dummy hands on all sides (West, East, North) in the full UI capture image.
     North dummy uses the same card detection as player hand (same card layout).
+    East/West use regional OCR on the side columns.
     """
     if img is None:
         return {"West": [], "North": [], "East": []}
@@ -115,12 +116,9 @@ def detect_dummy_hands(img, analyzer):
         except Exception:
             pass
     
-    # 2. East/West dummy: Regional OCR
-    # We crop the left (West) and right (East) columns to avoid full-screen OCR
+    # 2. East/West dummy: Regional OCR on side columns
     raw_candidates = []
     
-    # West area crop: x=0..110, y=350..600 (below North dummy)
-    # East area crop: x=400..w_img, y=350..600 (below North dummy)
     crops = []
     if h_img >= 600:
         if w_img >= 110:
@@ -135,6 +133,16 @@ def detect_dummy_hands(img, analyzer):
     for side, crop, offset_x, offset_y in crops:
         if crop.size == 0:
             continue
+        
+        # Pre-check: skip if crop doesn't look like a card area
+        hsv_crop = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
+        white_bg = np.sum((hsv_crop[:,:,1] < 50) & (hsv_crop[:,:,2] > 200))
+        red_suit = np.sum(cv2.inRange(hsv_crop, (0,40,40), (25,255,255)) + cv2.inRange(hsv_crop, (165,40,40), (180,255,255)) > 0)
+        black_suit = np.sum(cv2.inRange(hsv_crop, (0,0,0), (180,60,100)) > 0)
+        total_px = crop.shape[0] * crop.shape[1]
+        if white_bg < 0.25 * total_px or red_suit < 100 or black_suit < 100:
+            continue
+        
         gray_crop = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
         
         for thresh_val, invert, psm in [(200, True, 11)]:
@@ -205,9 +213,6 @@ def detect_dummy_hands(img, analyzer):
         
         cv2.imwrite(f"debug/dummy_card_{side}_{rank}{suit}.png", card_crop)
         
-        if not rank and suit:
-            rank = rank_hint
-            
         if rank and suit:
             detected_cards.append({
                 "rank": rank,
@@ -223,14 +228,13 @@ def detect_dummy_hands(img, analyzer):
     
     for card in detected_cards:
         cx, cy = card["cx"], card["cy"]
-        # North dummy cards are at y=240..340
         if 220 <= cy <= 360:
             north_dummy.append(card)
         elif cx < 0.22 * w_img and 0.22 * h_img <= cy < 0.75 * h_img:
             west_dummy.append(card)
         elif cx >= 0.78 * w_img and 0.22 * h_img <= cy < 0.75 * h_img:
             east_dummy.append(card)
-            
+    
     return {"West": west_dummy, "North": north_dummy, "East": east_dummy}
 
 def run_analysis(verbose=True):
