@@ -76,11 +76,47 @@ def clean_rank_candidate(text):
         return misreads[text]
     return None
 
+def _nms_boxes(boxes, threshold=0.3):
+    """Non-Maximum Suppression to filter overlapping detections."""
+    if len(boxes) == 0:
+        return []
+    
+    # boxes format: (x, y, w, h, score, label)
+    boxes = sorted(boxes, key=lambda x: x[4], reverse=True)
+    pick = []
+    
+    while len(boxes) > 0:
+        b = boxes[0]
+        pick.append(b)
+        boxes = boxes[1:]
+        
+        remaining = []
+        for box in boxes:
+            x1 = max(b[0], box[0])
+            y1 = max(b[1], box[1])
+            x2 = min(b[0] + b[2], box[0] + box[2])
+            y2 = min(b[1] + b[3], box[1] + box[3])
+            
+            w = max(0, x2 - x1)
+            h = max(0, y2 - y1)
+            intersection = w * h
+            
+            area_b = b[2] * b[3]
+            area_box = box[2] * box[3]
+            union = area_b + area_box - intersection
+            
+            iou = intersection / union if union > 0 else 0
+            if iou < threshold:
+                remaining.append(box)
+        boxes = remaining
+        
+    return pick
+
 def detect_dummy_hands(img, analyzer):
     """
     Detects dummy hands on all sides (West, East, North) in the full UI capture image.
     North dummy uses the same card detection as player hand (same card layout).
-    East/West use regional OCR on the side columns.
+    East/West use 2D template matching for robust rank and suit pairing.
     """
     if img is None:
         return {"West": [], "North": [], "East": []}
@@ -106,6 +142,7 @@ def detect_dummy_hands(img, analyzer):
                         "suit": card["suit"],
                         "cx": bbox.get("x", 0) + bbox.get("w", 0) // 2,
                         "cy": 240 + bbox.get("y", 0) + bbox.get("h", 0) // 2,
+                        "side": "North",
                         "bbox": {
                             "x": bbox.get("x", 0),
                             "y": bbox.get("y", 0) + 240,
@@ -115,126 +152,226 @@ def detect_dummy_hands(img, analyzer):
                     })
         except Exception:
             pass
-    
-    # 2. East/West dummy: Regional OCR on side columns
-    raw_candidates = []
-    
+            
+    # 2. East/West dummy: Template Matching
+    if not hasattr(analyzer, 'rank_templates'):
+        analyzer.rank_templates = {}
+        ranks = ["A", "K", "Q", "J", "T", "9", "8", "7", "6", "5", "4", "3", "2"]
+        for r in ranks:
+            p = os.path.join(analyzer.templates_dir, f"rank_{r}.png")
+            if os.path.exists(p):
+                analyzer.rank_templates[r] = cv2.imread(p, cv2.IMREAD_GRAYSCALE)
+            else:
+                p2 = os.path.join(analyzer.templates_dir, f"{r}.png")
+                if os.path.exists(p2):
+                    analyzer.rank_templates[r] = cv2.imread(p2, cv2.IMREAD_GRAYSCALE)
+
     crops = []
     if h_img >= 600:
         if w_img >= 110:
-            west_crop = img[350:600, 0:110]
+            west_crop = img[350:min(620, h_img), 0:110]
             crops.append(("West", west_crop, 0, 350))
             cv2.imwrite("debug/dummy_strip_west.png", west_crop)
         if w_img >= 400:
-            east_crop = img[350:600, 400:w_img]
+            east_crop = img[350:min(620, h_img), 400:w_img]
             crops.append(("East", east_crop, 400, 350))
             cv2.imwrite("debug/dummy_strip_east.png", east_crop)
-        
+
     for side, crop, offset_x, offset_y in crops:
         if crop.size == 0:
             continue
-        
+            
         # Pre-check: skip if crop doesn't look like a card area
         hsv_crop = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
-        white_bg = np.sum((hsv_crop[:,:,1] < 50) & (hsv_crop[:,:,2] > 200))
+        white_bg = np.sum((hsv_crop[:,:,1] < 50) & (hsv_crop[:,:,2] > 180))
         red_suit = np.sum(cv2.inRange(hsv_crop, (0,40,40), (25,255,255)) + cv2.inRange(hsv_crop, (165,40,40), (180,255,255)) > 0)
         black_suit = np.sum(cv2.inRange(hsv_crop, (0,0,0), (180,60,100)) > 0)
         total_px = crop.shape[0] * crop.shape[1]
-        if white_bg < 0.25 * total_px or red_suit < 100 or black_suit < 100:
-            continue
         
+        if white_bg < 4000 or (red_suit + black_suit) < 100:
+            continue
+            
         gray_crop = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
         
-        for thresh_val, invert, psm in [(200, True, 11)]:
-            _, thresh = cv2.threshold(gray_crop, thresh_val, 255, cv2.THRESH_BINARY)
-            proc = cv2.bitwise_not(thresh) if invert else thresh
-            scaled = cv2.resize(proc, (0, 0), fx=3.0, fy=3.0, interpolation=cv2.INTER_NEAREST)
-            
-            try:
-                data_str = pytesseract.image_to_data(scaled, config=f"--psm {psm}", output_type=pytesseract.Output.STRING)
-                f = StringIO(data_str)
-                reader = csv.reader(f, delimiter='\t')
-                header = next(reader)
+        # Match ranks
+        rank_detections = []
+        for r, tpl in analyzer.rank_templates.items():
+            if tpl is None:
+                continue
+            res = cv2.matchTemplate(gray_crop, tpl, cv2.TM_CCOEFF_NORMED)
+            h_tpl, w_tpl = tpl.shape
+            # Local maxima check
+            dilated = cv2.dilate(res, np.ones((3, 3)))
+            loc = np.where((res == dilated) & (res >= 0.72))
+            for pt in zip(*loc[::-1]):
+                patch = gray_crop[pt[1]:pt[1]+h_tpl, pt[0]:pt[0]+w_tpl]
+                # Ensure the matched area is on a white card (contains white pixels)
+                if np.max(patch) > 200:
+                    # Quick check: does the matched patch contain dark symbol pixels?
+                    if np.min(patch) < 135:
+                        score = res[pt[1], pt[0]]
+                        rank_detections.append((pt[0], pt[1], w_tpl, h_tpl, score, r))
                 
-                left_idx = header.index('left')
-                top_idx = header.index('top')
-                width_idx = header.index('width')
-                height_idx = header.index('height')
-                text_idx = header.index('text')
-                conf_idx = header.index('conf')
+        filtered_ranks = _nms_boxes(rank_detections, threshold=0.3)
+        
+        # Match suits
+        suit_detections = []
+        for s, tpl in analyzer.suit_templates.items():
+            if tpl is None:
+                continue
+            res = cv2.matchTemplate(gray_crop, tpl, cv2.TM_CCOEFF_NORMED)
+            h_tpl, w_tpl = tpl.shape
+            # Local maxima check
+            dilated = cv2.dilate(res, np.ones((3, 3)))
+            loc = np.where((res == dilated) & (res >= 0.75))
+            for pt in zip(*loc[::-1]):
+                patch = gray_crop[pt[1]:pt[1]+h_tpl, pt[0]:pt[0]+w_tpl]
+                # Ensure the matched area is on a white card (contains white pixels)
+                if np.max(patch) > 200:
+                    # Quick check: does the matched patch contain dark symbol pixels?
+                    if np.min(patch) < 135:
+                        score = res[pt[1], pt[0]]
+                        suit_detections.append((pt[0], pt[1], w_tpl, h_tpl, score, s))
                 
-                for row in reader:
-                    if len(row) <= text_idx:
-                        continue
-                    text = row[text_idx].strip()
-                    if not text:
-                        continue
-                    conf = float(row[conf_idx])
-                    if conf < 10:
-                        continue
-                    cleaned = clean_rank_candidate(text)
-                    if cleaned:
-                        cx = (int(row[left_idx]) + int(row[width_idx]) // 2) / 3.0 + offset_x
-                        cy = (int(row[top_idx]) + int(row[height_idx]) // 2) / 3.0 + offset_y
-                        raw_candidates.append((cleaned, cx, cy, conf))
-            except Exception:
-                pass
+        filtered_suits = _nms_boxes(suit_detections, threshold=0.3)
+        
+        # Pair ranks and suits using spatial relationship (suit offset: dx [3, 13], dy [22, 38])
+        paired_candidates = []
+        used_suits = set()
+        for rx, ry, rw, rh, r_score, r_label in filtered_ranks:
+            best_suit_info = None
+            best_suit_idx = -1
+            min_dist = float('inf')
+            
+            for s_idx, (sx, sy, sw, sh, s_score, s_label) in enumerate(filtered_suits):
+                if s_idx in used_suits:
+                    continue
+                dx = sx - rx
+                dy = sy - ry
+                if 3 <= dx <= 13 and 22 <= dy <= 38:
+                    dist = np.sqrt(dx**2 + dy**2)
+                    if dist < min_dist:
+                        min_dist = dist
+                        best_suit_info = (sx, sy, sw, sh, s_label)
+                        best_suit_idx = s_idx
+                        
+            if best_suit_info:
+                sx, sy, sw, sh, s_label = best_suit_info
+                # Get the 13x13 suit crop
+                sy_start = max(0, sy)
+                sy_end = min(crop.shape[0], sy + 13)
+                sx_start = max(0, sx)
+                sx_end = min(crop.shape[1], sx + 13)
+                suit_patch = crop[sy_start:sy_end, sx_start:sx_end]
                 
-    unique_candidates = []
-    for cand in raw_candidates:
-        cleaned, cx, cy, conf = cand
-        duplicate = False
-        for idx, (uc_clean, uc_cx, uc_cy, uc_conf) in enumerate(unique_candidates):
-            if abs(cx - uc_cx) < 15 and abs(cy - uc_cy) < 15:
-                duplicate = True
-                if conf > uc_conf:
-                    unique_candidates[idx] = (cleaned, cx, cy, conf)
-                break
-        if not duplicate:
-            unique_candidates.append((cleaned, cx, cy, conf))
+                # Check color (is_red)
+                is_red = False
+                if suit_patch.size > 0:
+                    hsv_patch = cv2.cvtColor(suit_patch, cv2.COLOR_BGR2HSV)
+                    lower_red1 = np.array([0, 50, 50])
+                    upper_red1 = np.array([25, 255, 255])
+                    lower_red2 = np.array([170, 50, 50])
+                    upper_red2 = np.array([180, 255, 255])
+                    mask = cv2.inRange(hsv_patch, lower_red1, upper_red1) + cv2.inRange(hsv_patch, lower_red2, upper_red2)
+                    is_red = (np.sum(mask > 0) / suit_patch.size) > 0.015
+                
+                # Calculate template matching scores for all 4 suits on the gray patch
+                scores = {}
+                gray_patch = gray_crop[sy_start:sy_end, sx_start:sx_end]
+                if gray_patch.size > 0:
+                    if gray_patch.shape[0] < 13 or gray_patch.shape[1] < 13:
+                        gray_patch = cv2.resize(gray_patch, (13, 13))
+                    for suit_name, tpl in analyzer.suit_templates.items():
+                        if tpl is not None:
+                            res_patch = cv2.matchTemplate(gray_patch, tpl, cv2.TM_CCOEFF_NORMED)
+                            _, max_val, _, _ = cv2.minMaxLoc(res_patch)
+                            scores[suit_name] = max_val
+                
+                paired_candidates.append({
+                    "rx": rx, "ry": ry, "rw": rw, "rh": rh,
+                    "sx": sx, "sy": sy,
+                    "r_label": r_label,
+                    "is_red": is_red,
+                    "scores": scores,
+                    "best_suit_idx": best_suit_idx
+                })
+                used_suits.add(best_suit_idx)
+
+        # Group paired cards into rows based on ry (clustering within 25px)
+        paired_candidates.sort(key=lambda x: x["ry"])
+        rows = []
+        for cand in paired_candidates:
+            if not rows or cand["ry"] - rows[-1][0]["ry"] > 25:
+                rows.append([cand])
+            else:
+                rows[-1].append(cand)
+                
+        # Classify the suit of each row and build final detected_cards
+        for row in rows:
+            # Majority vote on color
+            is_red_votes = [c["is_red"] for c in row]
+            is_red_row = (sum(is_red_votes) > len(is_red_votes) / 2)
             
-    for rank_hint, cx, cy, conf in unique_candidates:
-        card_w, card_h = 42, 66
-        card_x1 = int(cx - 21)
-        card_y1 = int(cy - 33)
-        card_x2 = card_x1 + card_w
-        card_y2 = card_y1 + card_h
-        
-        card_x1 = max(0, min(card_x1, w_img - 1))
-        card_y1 = max(0, min(card_y1, h_img - 1))
-        card_x2 = max(0, min(card_x2, w_img))
-        card_y2 = max(0, min(card_y2, h_img))
-        
-        if (card_x2 - card_x1) < 20 or (card_y2 - card_y1) < 30:
-            continue
-            
-        card_crop = img[card_y1:card_y2, card_x1:card_x2]
-        rank, suit = analyzer.extract_card(card_crop, is_hand=False)
-        
-        cv2.imwrite(f"debug/dummy_card_{side}_{rank}{suit}.png", card_crop)
-        
-        if rank and suit:
-            detected_cards.append({
-                "rank": rank,
-                "suit": suit,
-                "cx": cx,
-                "cy": cy,
-                "bbox": {"x": card_x1, "y": card_y1, "w": card_x2 - card_x1, "h": card_y2 - card_y1}
-            })
-            
+            # Sum scores based on color
+            if is_red_row:
+                heart_sum = sum(c["scores"].get("heart", 0) for c in row)
+                diamond_sum = sum(c["scores"].get("diamond", 0) for c in row)
+                row_suit = "heart" if heart_sum > diamond_sum else "diamond"
+            else:
+                spade_sum = sum(c["scores"].get("spade", 0) for c in row)
+                club_sum = sum(c["scores"].get("club", 0) for c in row)
+                row_suit = "spade" if spade_sum > club_sum else "club"
+                
+            # Assign suit to each card in the row and add to detected_cards
+            for cand in row:
+                cx = cand["rx"] + cand["rw"] // 2 + offset_x
+                cy = cand["ry"] + cand["rh"] // 2 + offset_y
+                
+                card_x1 = max(0, int(cx - 21))
+                card_y1 = max(0, int(cy - 33))
+                card_x2 = min(w_img, card_x1 + 42)
+                card_y2 = min(h_img, card_y1 + 66)
+                
+                detected_cards.append({
+                    "rank": cand["r_label"],
+                    "suit": row_suit,
+                    "cx": cx,
+                    "cy": cy,
+                    "side": side,
+                    "bbox": {"x": card_x1, "y": card_y1, "w": card_x2 - card_x1, "h": card_y2 - card_y1}
+                })
+                
+                # Save crop to debug folder
+                rel_x1 = max(0, cand["rx"] + cand["rw"] // 2 - 21)
+                rel_y1 = max(0, cand["ry"] + cand["rh"] // 2 - 33)
+                rel_x2 = min(crop.shape[1], rel_x1 + 42)
+                rel_y2 = min(crop.shape[0], rel_y1 + 66)
+                card_crop = crop[rel_y1:rel_y2, rel_x1:rel_x2]
+                if card_crop.size > 0:
+                    cv2.imwrite(f"debug/dummy_card_{side}_{cand['r_label']}_{row_suit}.png", card_crop)
+
     west_dummy = []
     east_dummy = []
     north_dummy = []
     
     for card in detected_cards:
-        cx, cy = card["cx"], card["cy"]
-        if 220 <= cy <= 360:
-            north_dummy.append(card)
-        elif cx < 0.22 * w_img and 0.22 * h_img <= cy < 0.75 * h_img:
+        side = card.get("side")
+        if side == "West":
             west_dummy.append(card)
-        elif cx >= 0.78 * w_img and 0.22 * h_img <= cy < 0.75 * h_img:
+        elif side == "East":
             east_dummy.append(card)
-    
+        elif side == "North":
+            north_dummy.append(card)
+        else:
+            # Fallback to coordinate check
+            cx, cy = card["cx"], card["cy"]
+            if 220 <= cy <= 360:
+                north_dummy.append(card)
+            elif cx < 0.22 * w_img and 0.22 * h_img <= cy < 0.75 * h_img:
+                west_dummy.append(card)
+            elif cx >= 0.78 * w_img and 0.22 * h_img <= cy < 0.75 * h_img:
+                east_dummy.append(card)
+                
     return {"West": west_dummy, "North": north_dummy, "East": east_dummy}
 
 def run_analysis(verbose=True):

@@ -288,8 +288,8 @@ class UIDetector:
         crop_size = 13
         
         all_positions = sorted(
-            [(black_suits[0], "spade"), (black_suits[1], "club"),
-             (red_suits[0], "heart"), (red_suits[1], "diamond")],
+            [(black_suits[0], "spade"), (black_suits[-1], "club"),
+             (red_suits[0], "heart"), (red_suits[-1], "diamond")],
             key=lambda x: x[0]
         )
         

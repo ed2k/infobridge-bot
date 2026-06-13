@@ -840,12 +840,37 @@ class BridgeAnalyzer:
         if self.verbose:
             print(f"Detected {len(peaks)} card suit peaks using smoothed color profile: {[p['x_suit'] for p in peaks]}")
             
-        # If we didn't find enough cards, fall back to linear slicing
-        if len(peaks) < 4:
-            if self.verbose:
-                print(f"⚠️ Color peak detection found too few cards ({len(peaks)}). Falling back to linear slicing.")
-            return self.extract_hand_cards_linear(hand_img, scale=scale, y_start=y_start_orig)
-            
+        # Group consecutive peaks of the same color to dynamically classify their suits (alternate or standard)
+        groups = []
+        for p in peaks:
+            if not groups or p["color"] != groups[-1]["color"]:
+                groups.append({"color": p["color"], "peaks": [p]})
+            else:
+                groups[-1]["peaks"].append(p)
+                
+        black_count = sum(1 for g in groups if g["color"] == "BLACK")
+        red_count = sum(1 for g in groups if g["color"] == "RED")
+        black_idx = 0
+        red_idx = 0
+        
+        for g in groups:
+            if g["color"] == "BLACK":
+                if black_count >= 2:
+                    suit_name = "spade" if black_idx == 0 else "club"
+                else:
+                    avg_x = sum(p["x_suit"] for p in g["peaks"]) / len(g["peaks"])
+                    suit_name = "spade" if avg_x < (w_strip / 2) else "club"
+                black_idx += 1
+            else:
+                if red_count >= 2:
+                    suit_name = "heart" if red_idx == 0 else "diamond"
+                else:
+                    avg_x = sum(p["x_suit"] for p in g["peaks"]) / len(g["peaks"])
+                    suit_name = "heart" if avg_x < (w_strip / 2) else "diamond"
+                red_idx += 1
+            for p in g["peaks"]:
+                p["assigned_suit"] = suit_name
+
         detected_cards = []
 
         peak_xs = [p["x_suit"] for p in peaks]
@@ -876,15 +901,12 @@ class BridgeAnalyzer:
             suit_top = hand_img[3:22, suit_left:min(suit_left + 40, w_strip)]
 
             rank, suit_raw = self.extract_card(card_crop, suit_img=suit_crop_wide, suit_img_top=suit_top, expected_suit_is_red=p["color"] == "RED")
-            suit = suit_raw or ("heart" if p["color"] == "RED" else "spade")
+            # Robust sequence-assigned suit
+            suit = p.get("assigned_suit") or suit_raw or ("heart" if p["color"] == "RED" else "spade")
 
             # Save debug crops
             os.makedirs("debug", exist_ok=True)
             cv2.imwrite(f"debug/card_crop_{idx}_{rank}{suit}.png", card_crop)
-
-            # If suit is None, fall back to color-based default
-            if not suit:
-                suit = "heart" if p["color"] == "RED" else "spade"
 
             detected_cards.append({
                 "rank": rank,
@@ -903,17 +925,75 @@ class BridgeAnalyzer:
                 import pytesseract as pt
                 gray_strip = cv2.cvtColor(hand_img_cropped, cv2.COLOR_BGR2GRAY)
                 scaled_strip = cv2.resize(gray_strip, (0, 0), fx=3, fy=3, interpolation=cv2.INTER_CUBIC)
-                thresh_strip = cv2.threshold(scaled_strip, 127, 255, cv2.THRESH_BINARY)[1]
-                raw = pt.image_to_string(thresh_strip, config="--psm 11 -c tessedit_char_whitelist=AKQJT9876543210").strip()
-                global_ranks = [c for c in raw if c in "AKQJT9876543210"]
-                if len(global_ranks) >= len(detected_cards):
-                    global_ranks = global_ranks[:len(detected_cards)]
+                
+                best_ranks = None
+                # Sweeping thresholds to find the most complete rank list matching detected_cards count
+                for thresh_val in [110, 100, 95, 120, "otsu"]:
+                    if thresh_val == "otsu":
+                        thresh_strip = cv2.threshold(scaled_strip, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)[1]
+                    else:
+                        thresh_strip = cv2.threshold(scaled_strip, thresh_val, 255, cv2.THRESH_BINARY)[1]
+                        
+                    # Test both normal and inverted
+                    for inv in [False, True]:
+                        proc = cv2.bitwise_not(thresh_strip) if inv else thresh_strip
+                        raw = pt.image_to_string(proc, config="--psm 11 -c tessedit_char_whitelist=AKQJT9876543210ODod").strip()
+                        
+                        # Parse and clean ranks by line block to handle vertical noise
+                        blocks = [b.strip() for b in raw.split('\n') if b.strip()]
+                        cleaned_blocks = []
+                        for b in blocks:
+                            raw_chars = [c for c in b.upper() if c in "AKQJT9876543210OD"]
+                            cleaned_b = []
+                            i = 0
+                            while i < len(raw_chars):
+                                char = raw_chars[i]
+                                if char == '1' and i + 1 < len(raw_chars) and raw_chars[i+1] == '0':
+                                    cleaned_b.append('T')
+                                    i += 2
+                                elif char == '1':
+                                    cleaned_b.append('T')
+                                    i += 1
+                                elif char in ['0', 'O', 'D']:
+                                    cleaned_b.append('Q')
+                                    i += 1
+                                else:
+                                    cleaned_b.append(char)
+                                    i += 1
+                            if cleaned_b:
+                                cleaned_blocks.append(cleaned_b)
+                                
+                        # Assemble the final ranks list
+                        cleaned_ranks = []
+                        if cleaned_blocks:
+                            if len(cleaned_blocks) == 1:
+                                cleaned_ranks = cleaned_blocks[0]
+                            else:
+                                first = cleaned_blocks[0]
+                                last = cleaned_blocks[-1]
+                                if len(first) + len(last) == len(detected_cards):
+                                    cleaned_ranks = first + last
+                                else:
+                                    for cb in cleaned_blocks:
+                                        cleaned_ranks.extend(cb)
+                                        
+                        if len(cleaned_ranks) >= len(detected_cards):
+                            best_ranks = cleaned_ranks[:len(detected_cards)]
+                            break
+                    if best_ranks is not None:
+                        break
+                        
+                if best_ranks is not None:
                     if self.verbose:
-                        print(f"Global OCR ranks: {''.join(global_ranks)}")
+                        print(f"Global OCR ranks (perfect match): {''.join(best_ranks)}")
                     for i, c in enumerate(detected_cards):
-                        c["rank"] = global_ranks[i]
-            except Exception:
-                pass
+                        c["rank"] = best_ranks[i]
+                else:
+                    if self.verbose:
+                        print("Global OCR could not find perfect match for card count. Keeping local OCR ranks.")
+            except Exception as e:
+                if self.verbose:
+                    print(f"Global OCR error: {e}")
             
         return detected_cards
 
