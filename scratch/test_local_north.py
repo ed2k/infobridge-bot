@@ -4,12 +4,28 @@ import os
 import pytesseract
 from analyzer import BridgeAnalyzer
 
-def test_offset(img_path, offset):
-    img = cv2.imread(img_path)
+def test_hand(filepath):
+    print(f"\n--- Testing {os.path.basename(filepath)} ---")
+    img = cv2.imread(filepath)
     if img is None:
+        print("❌ Failed to load image")
         return
-    a = BridgeAnalyzer(verbose=False)
+        
+    a = BridgeAnalyzer(verbose=True)
     
+    # 1. Run full extract_hand_cards (which does global OCR overwrite)
+    res_full = a.extract_hand_cards(img)
+    full_ranks = [c["rank"] for c in res_full]
+    
+    # 2. Run local OCR only (by temporarily disabling the global OCR block)
+    # We subclass or mock the global OCR check
+    # Let's temporarily patch len(detected_cards) check to be negative
+    import sys
+    orig_extract = a.extract_hand_cards
+    
+    # We'll run a custom version of extract_hand_cards or inspect the local ranks
+    # In analyzer.py, we have detected_cards list returned.
+    # Let's inspect the crops directly using the exact same logic.
     h_strip = img.shape[0]
     w_strip = img.shape[1]
     
@@ -18,6 +34,7 @@ def test_offset(img_path, offset):
     row_card_counts = np.sum(card_mask, axis=1)
     card_rows = np.where(row_card_counts > 0.05 * w_strip)[0]
     
+    y_start_orig = 0
     if len(card_rows) >= 10:
         y_start = card_rows[0]
         y_end = card_rows[-1]
@@ -25,11 +42,14 @@ def test_offset(img_path, offset):
         y_end = min(h_strip - 1, y_end + 2)
         img_cropped = img[y_start:y_end+1, :]
         h_strip = img_cropped.shape[0]
+        y_start_orig = y_start
     else:
         img_cropped = img.copy()
 
+    # Scale to 60
     scale = 60.0 / h_strip
     hand_img = cv2.resize(img_cropped, (0, 0), fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+    h_strip = 60
     w_strip = hand_img.shape[1]
     
     hsv = cv2.cvtColor(hand_img, cv2.COLOR_BGR2HSV)
@@ -59,41 +79,30 @@ def test_offset(img_path, offset):
                     col_red = np.sum(mask_red[41:54, x] > 0)
                     col_black = np.sum(mask_black[41:54, x] > 0)
                     color = "RED" if col_red >= col_black else "BLACK"
-                    peaks.append({"x_suit": x, "color": color})
+                    peaks.append({
+                        "x_suit": x,
+                        "color": color
+                    })
 
-    if "player_hand_area.png" in img_path:
-        true_ranks = ["K", "Q", "7", "5", "2", "6", "9", "5", "K", "J", "T", "8"]
-    else:
-        true_ranks = ["A", "K", "J", "5", "7", "5", "2", "Q", "8", "7", "6", "5"] # Adjust for dummy
-        
-    print(f"\n--- Testing Offset: -{offset} ---")
-    correct_ocr = 0
-    total_score = 0.0
-    
+    local_ranks = []
     for idx, p in enumerate(peaks):
-        if idx >= len(true_ranks):
-            break
-        true_r = true_ranks[idx]
-        x_card = max(0, p["x_suit"] - offset)
+        x_card = max(0, p["x_suit"] - 15)
         card_crop = hand_img[0:60, x_card:min(x_card + 40, w_strip)]
+        suit_left = max(0, p["x_suit"] - 15)
+        suit_crop_wide = hand_img[30:55, suit_left:min(suit_left + 40, w_strip)]
+        suit_top = hand_img[3:22, suit_left:min(suit_left + 40, w_strip)]
+        rank, suit = a.extract_card(card_crop, suit_img=suit_crop_wide, suit_img_top=suit_top, expected_suit_is_red=p["color"] == "RED")
+        local_ranks.append(rank)
         
-        # Local OCR
-        local_r, _ = a.extract_card(card_crop)
-        if local_r == true_r:
-            correct_ocr += 1
-            
-        # Score template
-        rank_crop = card_crop[2:30, 2:36]
-        score = a.score_rank_candidate(rank_crop, true_r)
-        if score > 0:
-            total_score += score
-        print(f"  Card {idx:2d} ({true_r}): OCR={local_r} | Score={score:.3f}")
-        
-    print(f"Summary for Offset -{offset}: OCR Accuracy = {correct_ocr}/{len(peaks)} | Avg Template Score = {total_score/len(peaks):.3f}")
+    print(f"Local OCR Ranks Only: {local_ranks}")
+    print(f"Global OCR Ranks:     {full_ranks}")
+    
+    mismatches = sum(1 for l, f in zip(local_ranks, full_ranks) if l and l != f)
+    print(f"Mismatches (excluding None): {mismatches}")
 
 def main():
-    for offset in [15, 18, 20, 22, 24]:
-        test_offset("debug/player_hand_area.png", offset)
+    test_hand("debug/player_hand_area.png")
+    test_hand("debug/dummy_strip_north.png")
 
 if __name__ == "__main__":
     main()

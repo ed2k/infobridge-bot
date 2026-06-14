@@ -26,8 +26,8 @@ def main():
     kernel = np.ones(13) / 13.0
     smoothed = np.convolve(profile, kernel, mode='same')
     
-    print("Profile values:")
-    for x in range(440, min(530, len(smoothed))):
+    print("Profile values at left edge:")
+    for x in range(0, 60):
         print(f"  x={x:3d}: raw={profile[x]:.1f}, smoothed={smoothed[x]:.3f}")
 
 if __name__ == "__main__":

@@ -556,9 +556,9 @@ class BridgeAnalyzer:
             # Full top half captures rank reliably for loose spacing (player hand)
             # Narrower crop avoids adjacent-card bleed for tight spacing (dummy)
             if "tight" in self.__dict__ and self.tight:
-                rank_crop = card_img[2:30, 2:28]
+                rank_crop = card_img[2:38, 2:28]
             else:
-                rank_crop = card_img[2:30, 2:36]
+                rank_crop = card_img[2:38, 2:36]
             # Wider bottom area to capture suit symbol (may be offset due to card overlap)
             suit_crop = card_img[30:55, 2:35]
         elif is_hand:
@@ -756,6 +756,92 @@ class BridgeAnalyzer:
             })
         return detected_cards
 
+    def load_rank_template(self, rank):
+        if not hasattr(self, 'rank_templates'):
+            self.rank_templates = {}
+        if rank in self.rank_templates:
+            return self.rank_templates[rank]
+            
+        p = os.path.join(self.templates_dir, f"rank_{rank}.png")
+        if os.path.exists(p):
+            self.rank_templates[rank] = cv2.imread(p, cv2.IMREAD_GRAYSCALE)
+        else:
+            p2 = os.path.join(self.templates_dir, f"{rank}.png")
+            if os.path.exists(p2):
+                self.rank_templates[rank] = cv2.imread(p2, cv2.IMREAD_GRAYSCALE)
+            else:
+                self.rank_templates[rank] = None
+        return self.rank_templates[rank]
+
+    def extract_card_candidates(self, card_img):
+        """
+        Extracts all unique rank candidates for a card image crop by running OCR
+        across different scale factors (fx) and PSM modes.
+        """
+        h, w = card_img.shape[:2]
+        if w < 10 or h < 10:
+            return []
+            
+        if h == 60:
+            if "tight" in self.__dict__ and self.tight:
+                rank_crop = card_img[2:30, 2:28]
+            else:
+                rank_crop = card_img[2:30, 2:36]
+        else:
+            rank_crop = card_img[2:int(h*0.43), 5:int(w*0.45)]
+            
+        if rank_crop.size == 0:
+            return []
+
+        def normalize_rank_text(raw_text):
+            rank_text = raw_text.strip().upper().replace(" ", "")
+            if not rank_text:
+                return None
+
+            if "10" in rank_text:
+                return "T"
+            if rank_text == "1":
+                return "T"
+
+            if rank_text in ["0", "O", "D"]:
+                return "Q"
+
+            valid_ranks = ["A", "K", "Q", "J", "T", "9", "8", "7", "6", "5", "4", "3", "2"]
+            return rank_text if rank_text in valid_ranks else None
+
+        candidates = []
+        for fx_val in [5.0, 4.0, 3.0]:
+            processed_rank = self.preprocess_for_ocr(rank_crop, fx=fx_val)
+            for psm in [8, 10, 6]:
+                custom_config = f"--psm {psm} -c tessedit_char_whitelist=AKQJT1098765432"
+                try:
+                    raw_rank = pytesseract.image_to_string(processed_rank, config=custom_config)
+                    rank_text = normalize_rank_text(raw_rank)
+                    if rank_text and rank_text not in candidates:
+                        candidates.append(rank_text)
+                except Exception:
+                    pass
+        return candidates
+
+    def score_rank_candidate(self, rank_crop, rank):
+        """
+        Calculates the Normalized Cross-Correlation score of a rank template on rank_crop.
+        """
+        tpl = self.load_rank_template(rank)
+        if tpl is None:
+            return -1.0
+            
+        if len(rank_crop.shape) == 3:
+            gray_crop = cv2.cvtColor(rank_crop, cv2.COLOR_BGR2GRAY)
+        else:
+            gray_crop = rank_crop
+            
+        if gray_crop.shape[0] >= tpl.shape[0] and gray_crop.shape[1] >= tpl.shape[1]:
+            res = cv2.matchTemplate(gray_crop, tpl, cv2.TM_CCOEFF_NORMED)
+            _, max_val, _, _ = cv2.minMaxLoc(res)
+            return max_val
+        return -1.0
+
     def extract_hand_cards(self, hand_img):
         """
         Extracts cards from a player hand row crop.
@@ -818,14 +904,16 @@ class BridgeAnalyzer:
         # Peak detection on smoothed profile
         peaks = []
         min_dist = 15
-        for x in range(min_dist, len(smoothed) - min_dist):
+        for x in range(0, len(smoothed)):
             val = smoothed[x]
             if val >= 2.0:
                 is_max = True
                 for dx in range(-min_dist, min_dist + 1):
-                    if smoothed[x + dx] > val:
-                        is_max = False
-                        break
+                    nx = x + dx
+                    if 0 <= nx < len(smoothed):
+                        if smoothed[nx] > val:
+                            is_max = False
+                            break
                 if is_max:
                     if not peaks or (x - peaks[-1]["x_suit"]) >= min_dist:
                         # Determine suit color at this peak
@@ -872,6 +960,7 @@ class BridgeAnalyzer:
                 p["assigned_suit"] = suit_name
 
         detected_cards = []
+        card_crops_list = []
 
         peak_xs = [p["x_suit"] for p in peaks]
 
@@ -888,21 +977,58 @@ class BridgeAnalyzer:
         col_white = np.sum(white_binary > 0, axis=0)
         first_white = int(np.where(col_white > 10)[0][0])
 
+        local_candidates_list = []
         for idx, p in enumerate(peaks):
-            # Crop card centered: x_card goes from p["x_suit"] - 15 to p["x_suit"] + 25 (width 40)
-            x_card = max(0, p["x_suit"] - 15)
-            card_crop = hand_img[0:60, x_card:min(x_card + 40, w_strip)]
+            # Crop card centered: x_card goes from p["x_suit"] - 15 to p["x_suit"] + 25 (width 40), with boundary padding
+            x_start = p["x_suit"] - 15
+            x_end = x_start + 40
+            pad_left = 0
+            pad_right = 0
+            if x_start < 0:
+                pad_left = -x_start
+                x_start = 0
+            if x_end > w_strip:
+                pad_right = x_end - w_strip
+                x_end = w_strip
+            
+            card_crop = hand_img[0:60, x_start:x_end]
+            if pad_left > 0 or pad_right > 0:
+                card_crop = cv2.copyMakeBorder(card_crop, 0, 0, pad_left, pad_right, cv2.BORDER_CONSTANT, value=[255, 255, 255])
+            card_crops_list.append(card_crop)
 
             # Suit crop centered on suit peak
-            suit_left = max(0, p["x_suit"] - 15)
-            suit_crop_wide = hand_img[30:55, suit_left:min(suit_left + 40, w_strip)]
+            suit_start = p["x_suit"] - 15
+            suit_end = suit_start + 40
+            pad_left_s = 0
+            pad_right_s = 0
+            if suit_start < 0:
+                pad_left_s = -suit_start
+                suit_start = 0
+            if suit_end > w_strip:
+                pad_right_s = suit_end - w_strip
+                suit_end = w_strip
+                
+            suit_crop_wide = hand_img[30:55, suit_start:suit_end]
+            if pad_left_s > 0 or pad_right_s > 0:
+                suit_crop_wide = cv2.copyMakeBorder(suit_crop_wide, 0, 0, pad_left_s, pad_right_s, cv2.BORDER_CONSTANT, value=[255, 255, 255])
 
             # Also prepare a top-area suit crop as fallback (less overlap interference)
-            suit_top = hand_img[3:22, suit_left:min(suit_left + 40, w_strip)]
+            suit_top = hand_img[3:22, suit_start:suit_end]
+            if pad_left_s > 0 or pad_right_s > 0:
+                suit_top = cv2.copyMakeBorder(suit_top, 0, 0, pad_left_s, pad_right_s, cv2.BORDER_CONSTANT, value=[255, 255, 255])
 
             rank, suit_raw = self.extract_card(card_crop, suit_img=suit_crop_wide, suit_img_top=suit_top, expected_suit_is_red=p["color"] == "RED")
             # Robust sequence-assigned suit
-            suit = p.get("assigned_suit") or suit_raw or ("heart" if p["color"] == "RED" else "spade")
+            if p["color"] == "RED":
+                suit = suit_raw or p.get("assigned_suit") or "heart"
+            else:
+                suit = p.get("assigned_suit") or suit_raw or "spade"
+
+            # Collect candidates
+            cands = self.extract_card_candidates(card_crop)
+            if rank and rank not in cands:
+                cands.append(rank)
+            local_candidates_list.append(cands)
 
             # Save debug crops
             os.makedirs("debug", exist_ok=True)
@@ -912,7 +1038,7 @@ class BridgeAnalyzer:
                 "rank": rank,
                 "suit": suit,
                 "bbox": {
-                    "x": int(x_card / scale),
+                    "x": int(x_start / scale),
                     "y": y_start_orig,
                     "w": int(40 / scale),
                     "h": int(60.0 / scale)
@@ -920,13 +1046,13 @@ class BridgeAnalyzer:
             })
             
         # Try global OCR on the cropped (full-res) hand strip for ranks (more accurate than per-card)
+        best_ranks = None
         if len(detected_cards) >= 10:
             try:
                 import pytesseract as pt
                 gray_strip = cv2.cvtColor(hand_img_cropped, cv2.COLOR_BGR2GRAY)
                 scaled_strip = cv2.resize(gray_strip, (0, 0), fx=3, fy=3, interpolation=cv2.INTER_CUBIC)
                 
-                best_ranks = None
                 # Sweeping thresholds to find the most complete rank list matching detected_cards count
                 for thresh_val in [110, 100, 95, 120, "otsu"]:
                     if thresh_val == "otsu":
@@ -982,19 +1108,64 @@ class BridgeAnalyzer:
                             break
                     if best_ranks is not None:
                         break
-                        
-                if best_ranks is not None:
-                    if self.verbose:
-                        print(f"Global OCR ranks (perfect match): {''.join(best_ranks)}")
-                    for i, c in enumerate(detected_cards):
-                        c["rank"] = best_ranks[i]
-                else:
-                    if self.verbose:
-                        print("Global OCR could not find perfect match for card count. Keeping local OCR ranks.")
             except Exception as e:
                 if self.verbose:
                     print(f"Global OCR error: {e}")
-            
+                    
+        # Consensus Resolution using template matching
+        if len(detected_cards) >= 10:
+            if best_ranks is not None and self.verbose:
+                print(f"Global OCR ranks (perfect match) candidate: {''.join(best_ranks)}")
+            elif self.verbose:
+                print("Global OCR could not find perfect match for card count. Resolving local candidates via template matching.")
+                
+            for i, c in enumerate(detected_cards):
+                local_r = c.get("rank")
+                local_cands = local_candidates_list[i]
+                global_r = best_ranks[i] if best_ranks is not None else None
+                
+                # Set of candidates to evaluate
+                candidates = list(local_cands)
+                if global_r and global_r not in candidates:
+                    candidates.append(global_r)
+                    
+                if candidates:
+                    card_crop = card_crops_list[i]
+                    if "tight" in self.__dict__ and self.tight:
+                        rank_crop = card_crop[2:38, 2:28]
+                    else:
+                        rank_crop = card_crop[2:38, 2:36]
+                        
+                    # Score all candidates
+                    scores = {}
+                    for cand in candidates:
+                        scores[cand] = self.score_rank_candidate(rank_crop, cand)
+                        
+                    # Find best candidate
+                    best_cand = max(scores, key=scores.get)
+                    best_score = scores[best_cand]
+                    
+                    # Determine local score
+                    local_score = scores.get(local_r, -1.0) if local_r else -1.0
+                    
+                    # Override logic:
+                    # Default to local_r. Only override if best_cand is different,
+                    # has a high absolute score (>0.60), and is significantly better than local_score.
+                    chosen_rank = local_r
+                    if local_r is None:
+                        if best_score > 0.50:
+                            chosen_rank = best_cand
+                    elif best_cand != local_r:
+                        if best_score > 0.60 and best_score > local_score + 0.10:
+                            chosen_rank = best_cand
+                            
+                    if self.verbose and chosen_rank != local_r:
+                        print(f"  Card {i+1}: local={local_r} (score={local_score:.3f}) -> overridden by={chosen_rank} (score={best_score:.3f})")
+                        
+                    c["rank"] = chosen_rank
+                elif global_r:
+                    c["rank"] = global_r
+                    
         return detected_cards
 
     def locate_ui_text_button(self, ui_img, target_text, ui_roi, fx=2.0, thresh_val=127, max_y=None):

@@ -127,7 +127,16 @@ def detect_dummy_hands(img, analyzer):
     # 1. North dummy: Same layout as player hand (one row of cards)
     # The dummy card strip is at y=240..340 in the UI
     if h_img >= 340:
-        dummy_strip = img[240:340, 0:w_img]
+        # Crop the center section where North dummy cards reside to avoid sidebar noise
+        if w_img > 600:
+            left_x = w_img // 2 - 250
+            right_x = w_img // 2 + 250
+            dummy_strip = img[240:340, left_x:right_x]
+            offset_x = left_x
+        else:
+            dummy_strip = img[240:340, 0:w_img]
+            offset_x = 0
+            
         try:
             import os
             os.makedirs("debug", exist_ok=True)
@@ -140,7 +149,7 @@ def detect_dummy_hands(img, analyzer):
                     detected_cards.append({
                         "rank": card["rank"],
                         "suit": card["suit"],
-                        "cx": bbox.get("x", 0) + bbox.get("w", 0) // 2,
+                        "cx": offset_x + bbox.get("x", 0) + bbox.get("w", 0) // 2,
                         "cy": 240 + bbox.get("y", 0) + bbox.get("h", 0) // 2,
                         "side": "North",
                         "bbox": {

@@ -4,11 +4,16 @@ import os
 import pytesseract
 from analyzer import BridgeAnalyzer
 
-def test_offset(img_path, offset):
-    img = cv2.imread(img_path)
+def analyze_image(filepath):
+    print(f"\n=========================================")
+    print(f"ANALYZING: {filepath}")
+    print(f"=========================================")
+    img = cv2.imread(filepath)
     if img is None:
+        print("❌ Failed to load image")
         return
-    a = BridgeAnalyzer(verbose=False)
+        
+    a = BridgeAnalyzer(verbose=True)
     
     h_strip = img.shape[0]
     w_strip = img.shape[1]
@@ -61,39 +66,65 @@ def test_offset(img_path, offset):
                     color = "RED" if col_red >= col_black else "BLACK"
                     peaks.append({"x_suit": x, "color": color})
 
-    if "player_hand_area.png" in img_path:
-        true_ranks = ["K", "Q", "7", "5", "2", "6", "9", "5", "K", "J", "T", "8"]
-    else:
-        true_ranks = ["A", "K", "J", "5", "7", "5", "2", "Q", "8", "7", "6", "5"] # Adjust for dummy
-        
-    print(f"\n--- Testing Offset: -{offset} ---")
-    correct_ocr = 0
-    total_score = 0.0
+    # Group consecutive peaks of the same color
+    groups = []
+    for p in peaks:
+        if not groups or p["color"] != groups[-1]["color"]:
+            groups.append({"color": p["color"], "peaks": [p]})
+        else:
+            groups[-1]["peaks"].append(p)
+            
+    black_count = sum(1 for g in groups if g["color"] == "BLACK")
+    red_count = sum(1 for g in groups if g["color"] == "RED")
+    black_idx = 0
+    red_idx = 0
+    
+    for g in groups:
+        if g["color"] == "BLACK":
+            if black_count >= 2:
+                suit_name = "spade" if black_idx == 0 else "club"
+            else:
+                avg_x = sum(p["x_suit"] for p in g["peaks"]) / len(g["peaks"])
+                suit_name = "spade" if avg_x < (w_strip / 2) else "club"
+            black_idx += 1
+        else:
+            if red_count >= 2:
+                suit_name = "heart" if red_idx == 0 else "diamond"
+            else:
+                avg_x = sum(p["x_suit"] for p in g["peaks"]) / len(g["peaks"])
+                suit_name = "heart" if avg_x < (w_strip / 2) else "diamond"
+            red_idx += 1
+        for p in g["peaks"]:
+            p["assigned_suit"] = suit_name
+
+    print(f"Found {len(peaks)} peaks: {[p['x_suit'] for p in peaks]}")
     
     for idx, p in enumerate(peaks):
-        if idx >= len(true_ranks):
-            break
-        true_r = true_ranks[idx]
-        x_card = max(0, p["x_suit"] - offset)
+        x_card = max(0, p["x_suit"] - 15)
         card_crop = hand_img[0:60, x_card:min(x_card + 40, w_strip)]
+        suit = p.get("assigned_suit")
         
         # Local OCR
         local_r, _ = a.extract_card(card_crop)
-        if local_r == true_r:
-            correct_ocr += 1
-            
-        # Score template
-        rank_crop = card_crop[2:30, 2:36]
-        score = a.score_rank_candidate(rank_crop, true_r)
-        if score > 0:
-            total_score += score
-        print(f"  Card {idx:2d} ({true_r}): OCR={local_r} | Score={score:.3f}")
+        candidates = a.extract_card_candidates(card_crop)
         
-    print(f"Summary for Offset -{offset}: OCR Accuracy = {correct_ocr}/{len(peaks)} | Avg Template Score = {total_score/len(peaks):.3f}")
+        # Template Matching Scores on all 13 ranks
+        scores = {}
+        rank_crop = card_crop[2:30, 2:36]
+        gray_crop = cv2.cvtColor(rank_crop, cv2.COLOR_BGR2GRAY)
+        for rank in ["A", "K", "Q", "J", "T", "9", "8", "7", "6", "5", "4", "3", "2"]:
+            scores[rank] = a.score_rank_candidate(rank_crop, rank)
+            
+        sorted_scores = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+        top_scores_str = ", ".join([f"{r}:{s:.3f}" for r, s in sorted_scores[:4]])
+        
+        print(f"Card {idx:2d} (x={p['x_suit']}, suit={suit}):")
+        print(f"  Local OCR: {local_r} | Candidates: {candidates}")
+        print(f"  Top templates: {top_scores_str}")
 
 def main():
-    for offset in [15, 18, 20, 22, 24]:
-        test_offset("debug/player_hand_area.png", offset)
+    analyze_image("debug/player_hand_area.png")
+    analyze_image("debug/dummy_strip_north.png")
 
 if __name__ == "__main__":
     main()

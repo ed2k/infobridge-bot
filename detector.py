@@ -204,14 +204,16 @@ class UIDetector:
         min_dist = 15
         
         peaks = []
-        for x in range(min_dist, len(smoothed) - min_dist):
+        for x in range(0, len(smoothed)):
             val = smoothed[x]
             if val >= 1.5:
                 is_max = True
                 for dx in range(-min_dist, min_dist + 1):
-                    if smoothed[x + dx] > val:
-                        is_max = False
-                        break
+                    nx = x + dx
+                    if 0 <= nx < len(smoothed):
+                        if smoothed[nx] > val:
+                            is_max = False
+                            break
                 if is_max:
                     if not peaks or (x - peaks[-1]["x_suit"]) >= min_dist:
                         col_red = np.sum(mask_red[suit_row_start:suit_row_end, x] > 0)

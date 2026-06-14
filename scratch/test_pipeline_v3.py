@@ -1,13 +1,17 @@
 import cv2
 import numpy as np
-import os
 import pytesseract
 from analyzer import BridgeAnalyzer
 
-def test_offset(img_path, offset):
+def test_pipeline(img_path, offset):
+    print(f"\n=========================================")
+    print(f"TESTING PIPELINE: {img_path} | Offset={offset}")
+    print(f"=========================================")
     img = cv2.imread(img_path)
     if img is None:
+        print("❌ Failed to load image")
         return
+        
     a = BridgeAnalyzer(verbose=False)
     
     h_strip = img.shape[0]
@@ -44,56 +48,52 @@ def test_offset(img_path, offset):
     kernel = np.ones(13) / 13.0
     smoothed = np.convolve(profile, kernel, mode='same')
     
+    # Peak detection with boundary fix
     peaks = []
     min_dist = 15
-    for x in range(min_dist, len(smoothed) - min_dist):
+    for x in range(0, len(smoothed)):
         val = smoothed[x]
         if val >= 2.0:
             is_max = True
             for dx in range(-min_dist, min_dist + 1):
-                if smoothed[x + dx] > val:
-                    is_max = False
-                    break
+                nx = x + dx
+                if 0 <= nx < len(smoothed):
+                    if smoothed[nx] > val:
+                        is_max = False
+                        break
             if is_max:
-                if not peaks or (x - peaks[-1]["x_suit"]) >= min_dist:
-                    col_red = np.sum(mask_red[41:54, x] > 0)
-                    col_black = np.sum(mask_black[41:54, x] > 0)
-                    color = "RED" if col_red >= col_black else "BLACK"
-                    peaks.append({"x_suit": x, "color": color})
+                if not peaks or (x - peaks[-1]) >= min_dist:
+                    peaks.append(x)
 
-    if "player_hand_area.png" in img_path:
-        true_ranks = ["K", "Q", "7", "5", "2", "6", "9", "5", "K", "J", "T", "8"]
-    else:
-        true_ranks = ["A", "K", "J", "5", "7", "5", "2", "Q", "8", "7", "6", "5"] # Adjust for dummy
-        
-    print(f"\n--- Testing Offset: -{offset} ---")
-    correct_ocr = 0
-    total_score = 0.0
+    print(f"Peaks found ({len(peaks)}): {peaks}")
     
-    for idx, p in enumerate(peaks):
-        if idx >= len(true_ranks):
-            break
-        true_r = true_ranks[idx]
-        x_card = max(0, p["x_suit"] - offset)
+    if "player_hand_area.png" in img_path:
+        true_ranks = ["K", "Q", "7", "5", "2", "6", "9", "5", "K", "J", "T", "8", "2"] # 13 cards!
+    else:
+        # North Dummy true ranks
+        true_ranks = ["A", "K", "J", "5", "7", "5", "2", "Q", "8", "7", "6", "5", "4", "T"] # 14 cards?
+        # Wait, let's verify if North dummy has 13 or 14 cards.
+        
+    for idx, peak in enumerate(peaks):
+        x_card = max(0, peak - offset)
         card_crop = hand_img[0:60, x_card:min(x_card + 40, w_strip)]
         
         # Local OCR
         local_r, _ = a.extract_card(card_crop)
-        if local_r == true_r:
-            correct_ocr += 1
-            
-        # Score template
-        rank_crop = card_crop[2:30, 2:36]
-        score = a.score_rank_candidate(rank_crop, true_r)
-        if score > 0:
-            total_score += score
-        print(f"  Card {idx:2d} ({true_r}): OCR={local_r} | Score={score:.3f}")
+        true_r = true_ranks[idx] if idx < len(true_ranks) else "?"
         
-    print(f"Summary for Offset -{offset}: OCR Accuracy = {correct_ocr}/{len(peaks)} | Avg Template Score = {total_score/len(peaks):.3f}")
+        # Score
+        rank_crop = card_crop[2:30, 2:36]
+        score = a.score_rank_candidate(rank_crop, true_r) if true_r != "?" else -1.0
+        
+        print(f"  Card {idx:2d} (x={peak:3d}): True={true_r} | OCR={local_r} | Score={score:.3f}")
 
 def main():
-    for offset in [15, 18, 20, 22, 24]:
-        test_offset("debug/player_hand_area.png", offset)
+    test_pipeline("debug/player_hand_area.png", 15)
+    test_pipeline("debug/player_hand_area.png", 18)
+    test_pipeline("debug/player_hand_area.png", 22)
+    test_pipeline("debug/dummy_strip_north.png", 15)
+    test_pipeline("debug/dummy_strip_north.png", 18)
 
 if __name__ == "__main__":
     main()
