@@ -853,10 +853,10 @@ def format_bidding_table(direction_bids):
         lines.append(f"⏳ Waiting for {waiting} to bid...")
     return "\n".join(lines)
 
-def run_decision_loop(interval=2.0, dry_run=False, verbose=False, once=False, save_play=False, output_dir="captured_plays"):
+def run_decision_loop(interval=2.0, dry_run=False, verbose=False, once=False, save_play=False, output_dir="captured_plays", action=False):
     """Runs the capture -> analyze -> decide -> execute loop continuously or once."""
     mode = "single pass" if once else "continuous"
-    print(f"🤖 Starting Bridge Play Decision Engine ({mode}, polling every {interval}s, dry_run={dry_run})...")
+    print(f"🤖 Starting Bridge Play Decision Engine ({mode}, polling every {interval}s, dry_run={dry_run}, action={action})...")
     if not once:
         print("Press Ctrl+C to stop.")
     
@@ -866,7 +866,7 @@ def run_decision_loop(interval=2.0, dry_run=False, verbose=False, once=False, sa
         from strategy import decide_bid, decide_play_card
         cap = ScreenCapture()
         analyzer = BridgeAnalyzer(verbose=verbose)
-        ctrl = BridgeController(dry_run=dry_run)
+        ctrl = BridgeController(dry_run=dry_run, action=action)
         delta = RegionDeltaDetector()
         
         last_bids = []
@@ -1002,8 +1002,8 @@ def run_decision_loop(interval=2.0, dry_run=False, verbose=False, once=False, sa
                             coords = analyzer.locate_ui_text_button(ui_img, suggested_bid, ui_roi, max_y=max_y)
                             if coords:
                                 cx, cy = coords
-                                if dry_run:
-                                    print(f"🤖 [DRY RUN] Would move to special bid '{suggested_bid}' button at ({cx}, {cy}) and click.")
+                                if not action:
+                                    print(f"🤖 [NO ACTION] Would move to special bid '{suggested_bid}' button at ({cx}, {cy}) and click.")
                                 else:
                                     import pyautogui
                                     start_x, start_y = pyautogui.position()
@@ -1030,8 +1030,8 @@ def run_decision_loop(interval=2.0, dry_run=False, verbose=False, once=False, sa
                             level_coords = analyzer.locate_ui_text_button(ui_img, level, ui_roi, max_y=max_y)
                             if level_coords:
                                 lx, ly = level_coords
-                                if dry_run:
-                                    print(f"🤖 [DRY RUN] Would move to level '{level}' button at ({lx}, {ly}) and click.")
+                                if not action:
+                                    print(f"🤖 [NO ACTION] Would move to level '{level}' button at ({lx}, {ly}) and click.")
                                 else:
                                     import pyautogui
                                     start_x, start_y = pyautogui.position()
@@ -1040,7 +1040,7 @@ def run_decision_loop(interval=2.0, dry_run=False, verbose=False, once=False, sa
                                     pyautogui.mouseDown()
                                     time.sleep(0.15)
                                     pyautogui.mouseUp()
-                                    time.sleep(0.4) # Wait for animation / suits to display
+                                    time.sleep(0.4)
                                     
                                 # Re-capture UI to locate "NT" button
                                 ui_img = cap.capture_ui()
@@ -1060,8 +1060,8 @@ def run_decision_loop(interval=2.0, dry_run=False, verbose=False, once=False, sa
                                     offset = suit_offsets.get(suit, 0)
                                     tx, ty = nx + offset, ny
                                     
-                                    if dry_run:
-                                        print(f"🤖 [DRY RUN] Would move to suit '{suit}' button at ({tx}, {ty}) and click.")
+                                    if not action:
+                                        print(f"🤖 [NO ACTION] Would move to suit '{suit}' button at ({tx}, {ty}) and click.")
                                     else:
                                         pyautogui.moveTo(tx, ty, duration=0.3, tween=pyautogui.easeInOutQuad)
                                         time.sleep(0.1)
@@ -1069,7 +1069,7 @@ def run_decision_loop(interval=2.0, dry_run=False, verbose=False, once=False, sa
                                         time.sleep(0.15)
                                         pyautogui.mouseUp()
                                         print(f"🖱️ Clicked suit '{suit}' to show hint.")
-                                        time.sleep(3.0) # Wait 3s to let the user see the hint
+                                        time.sleep(3.0)
                                         pyautogui.moveTo(start_x, start_y, duration=0.3, tween=pyautogui.easeInOutQuad)
                                 last_hinted_state = current_state
             else:
@@ -1154,6 +1154,7 @@ def main():
     parser.add_argument("--once", action="store_true", help="Run one iteration and exit (useful with --run)")
     parser.add_argument("--save-play", action="store_true", help="Save the captured bids, hand, and play sequence into PBN and JSON files")
     parser.add_argument("--output-dir", type=str, default="captured_plays", help="Directory where captured plays are stored (default: 'captured_plays')")
+    parser.add_argument("--action", action="store_true", help="Enable actual mouse movement (default: observation only)")
 
     args = parser.parse_args()
 
@@ -1170,7 +1171,7 @@ def main():
     elif args.monitor:
         run_monitoring(args.interval, verbose=args.verbose, save_play=args.save_play, output_dir=args.output_dir)
     elif args.run:
-        run_decision_loop(args.interval, args.dry_run, verbose=args.verbose, once=args.once, save_play=args.save_play, output_dir=args.output_dir)
+        run_decision_loop(args.interval, args.dry_run, verbose=args.verbose, once=args.once, save_play=args.save_play, output_dir=args.output_dir, action=args.action)
 
 if __name__ == "__main__":
     main()

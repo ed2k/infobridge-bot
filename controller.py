@@ -15,9 +15,10 @@ CONFIG_FILE = "config.json"
 pyautogui.FAILSAFE = True
 
 class BridgeController:
-    def __init__(self, config_path=CONFIG_FILE, dry_run=False):
+    def __init__(self, config_path=CONFIG_FILE, dry_run=False, action=False):
         self.config_path = config_path
         self.dry_run = dry_run
+        self.action = action
         self.config = self.load_config()
 
     def load_config(self):
@@ -43,8 +44,8 @@ class BridgeController:
         target_x = target["x"]
         target_y = target["y"]
 
-        if self.dry_run:
-            print(f"🤖 [DRY RUN] Would click Build Info button at ({target_x}, {target_y})")
+        if self.dry_run or not self.action:
+            print(f"🤖 [NO ACTION] Would click Build Info button at ({target_x}, {target_y})")
             return
 
         # Record starting position
@@ -87,8 +88,8 @@ class BridgeController:
         target_x = int(hand_roi["x"] + card_bbox["x"] + (card_bbox["w"] / 2))
         target_y = int(hand_roi["y"] + (hand_roi["height"] / 2))
         
-        if self.dry_run:
-            print(f"🤖 [DRY RUN] Would click card at ({target_x}, {target_y}) - relative bbox {card_bbox}")
+        if self.dry_run or not self.action:
+            print(f"🤖 [NO ACTION] Would click card at ({target_x}, {target_y}) - relative bbox {card_bbox}")
             return
             
         start_x, start_y = pyautogui.position()
@@ -123,8 +124,8 @@ class BridgeController:
         target_x = int(bidding_roi["x"] + bid_bbox["x"] + (bid_bbox["w"] / 2))
         target_y = int(bidding_roi["y"] + bid_bbox["y"] + (bid_bbox["h"] / 2))
         
-        if self.dry_run:
-            print(f"🤖 [DRY RUN] Would click bid at ({target_x}, {target_y}) - relative bbox {bid_bbox}")
+        if self.dry_run or not self.action:
+            print(f"🤖 [NO ACTION] Would click bid at ({target_x}, {target_y}) - relative bbox {bid_bbox}")
             return target_x, target_y
             
         start_x, start_y = pyautogui.position()
