@@ -1081,6 +1081,92 @@ class BridgeAnalyzer:
                     pass
         return candidates
 
+    def shave_below_suit(self, card_crop):
+        """
+        Locates the suit symbol in the card crop using template matching,
+        and blanks out everything below it to clean up the rank crop.
+        """
+        h, w = card_crop.shape[:2]
+        shaved = card_crop.copy()
+        if h != 60:
+            return shaved
+            
+        # Extract suit crop [30:55, 2:35]
+        suit_img = card_crop[30:55, 2:35]
+        if suit_img.size == 0:
+            return shaved
+            
+        # Color pigment check to select allowed templates (like in classify_suit_template_matching)
+        hsv = cv2.cvtColor(suit_img, cv2.COLOR_BGR2HSV)
+        lower_red1 = np.array([0, 50, 50])
+        upper_red1 = np.array([25, 255, 255])
+        lower_red2 = np.array([170, 50, 50])
+        upper_red2 = np.array([180, 255, 255])
+        mask = cv2.inRange(hsv, lower_red1, upper_red1) + cv2.inRange(hsv, lower_red2, upper_red2)
+        red_ratio = np.sum(mask > 0) / suit_img.size
+        is_red = red_ratio > 0.015
+        
+        allowed_suits = ["heart", "diamond"] if is_red else ["spade", "club"]
+        gray_suit = cv2.cvtColor(suit_img, cv2.COLOR_BGR2GRAY)
+        
+        best_score = -1.0
+        best_y = -1
+        
+        for suit in allowed_suits:
+            tpl = self.suit_templates.get(suit)
+            if tpl is None:
+                continue
+            res = cv2.matchTemplate(gray_suit, tpl, cv2.TM_CCOEFF_NORMED)
+            _, max_val, _, max_loc = cv2.minMaxLoc(res)
+            if max_val > best_score:
+                best_score = max_val
+                best_y = max_loc[1]
+                
+        if best_score > 0.35:
+            # Shave 3 pixels ABOVE the detected suit start to clear any bleed/top edges
+            abs_sy = max(0, 30 + best_y - 3)
+            shaved[abs_sy:, :] = 255
+        else:
+            shaved[27:, :] = 255 # default fallback
+            
+        return shaved
+
+    def shave_borders(self, gray_crop, threshold=120, edge_density_limit=0.40):
+        """
+        Removes borders and adjacent card bleed from crop edges.
+        """
+        h, w = gray_crop.shape[:2]
+        shaved = gray_crop.copy()
+        
+        # 1. Shave from left to right (search up to 35% of width)
+        for x in range(int(w * 0.35)):
+            col = shaved[:, x]
+            dark_ratio = np.sum(col < threshold) / h
+            if dark_ratio > edge_density_limit:
+                shaved[:, x] = 255
+            else:
+                break
+                
+        # 2. Shave from right to left (search up to 35% of width)
+        for x in range(w - 1, int(w * 0.65), -1):
+            col = shaved[:, x]
+            dark_ratio = np.sum(col < threshold) / h
+            if dark_ratio > edge_density_limit:
+                shaved[:, x] = 255
+            else:
+                break
+                
+        # 3. Shave from top to bottom (search up to 25% of height)
+        for y in range(int(h * 0.25)):
+            row = shaved[y, :]
+            dark_ratio = np.sum(row < threshold) / w
+            if dark_ratio > edge_density_limit:
+                shaved[y, :] = 255
+            else:
+                break
+                
+        return shaved
+
     def score_rank_candidate(self, rank_crop, rank):
         """
         Calculates the Normalized Cross-Correlation score of a rank template on rank_crop.
@@ -1092,7 +1178,9 @@ class BridgeAnalyzer:
         if len(rank_crop.shape) == 3:
             gray_crop = cv2.cvtColor(rank_crop, cv2.COLOR_BGR2GRAY)
         else:
-            gray_crop = rank_crop
+            gray_crop = rank_crop.copy()
+            
+        gray_crop = self.shave_borders(gray_crop)
             
         if gray_crop.shape[0] >= tpl.shape[0] and gray_crop.shape[1] >= tpl.shape[1]:
             res = cv2.matchTemplate(gray_crop, tpl, cv2.TM_CCOEFF_NORMED)
@@ -1417,10 +1505,13 @@ class BridgeAnalyzer:
                     candidates.append(paddle_r)
                     
                 if candidates:
+                    # Pre-shave below the suit symbol to clear any bottom bleed/suit symbols
+                    shaved_card = self.shave_below_suit(card_crop)
+                    
                     if "tight" in self.__dict__ and self.tight:
-                        rank_crop = card_crop[2:38, 2:28]
+                        rank_crop = shaved_card[2:38, 2:28]
                     else:
-                        rank_crop = card_crop[2:38, 2:36]
+                        rank_crop = shaved_card[2:38, 2:36]
                         
                     scores = {}
                     for cand in candidates:
