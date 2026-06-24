@@ -483,31 +483,30 @@ def detect_dummy_hands(img, analyzer):
                     return ranks
 
                 row_cy = sum(c["ry"] for c in row) / len(row)
-                matching_res = None
-                best_rank_count = 0
-                min_cy_diff = float('inf')
+                
+                # Gather all aligned OCR boxes (within 25px vertically, cx >= 15 horizontally)
+                aligned_ocr_boxes = []
                 for res in paddle_results:
                     bbox = res["bbox"]
                     cy = (bbox[0][1] + bbox[2][1]) / 2.0
+                    cx = (bbox[0][0] + bbox[1][0]) / 2.0
                     diff = abs(cy - row_cy)
-                    if diff < 20:
-                        cand_ranks = parse_ranks(res["text"])
-                        rank_count = len(cand_ranks)
-                        if rank_count > best_rank_count:
-                            best_rank_count = rank_count
-                            min_cy_diff = diff
-                            matching_res = res
-                        elif rank_count == best_rank_count:
-                            if diff < min_cy_diff:
-                                min_cy_diff = diff
-                                matching_res = res
-                if matching_res:
-                    ocr_ranks = parse_ranks(matching_res["text"])
+                    if diff < 25 and cx >= 15:
+                        aligned_ocr_boxes.append(res)
+                
+                if aligned_ocr_boxes:
+                    # Sort boxes horizontally
+                    aligned_ocr_boxes.sort(key=lambda b: (b["bbox"][0][0] + b["bbox"][1][0]) / 2.0)
+                    ocr_ranks = []
+                    for box in aligned_ocr_boxes:
+                        ocr_ranks.extend(parse_ranks(box["text"]))
+                    
                     if ocr_ranks:
                         # Sort row candidates horizontally from left to right
                         row.sort(key=lambda x: x["rx"])
-                        x1 = min(pt[0] for pt in matching_res["bbox"])
-                        x2 = max(pt[0] for pt in matching_res["bbox"])
+                        # Compute combined bounding box span
+                        x1 = min(min(pt[0] for pt in box["bbox"]) for box in aligned_ocr_boxes)
+                        x2 = max(max(pt[0] for pt in box["bbox"]) for box in aligned_ocr_boxes)
                         w = x2 - x1
                         if len(ocr_ranks) > len(row):
                             # Trust OCR entirely and reconstruct the row
