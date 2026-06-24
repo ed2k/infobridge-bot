@@ -212,24 +212,31 @@ def detect_dummy_hands(img, analyzer):
             import os
             os.makedirs("debug", exist_ok=True)
             cv2.imwrite("debug/dummy_strip_north.png", dummy_strip)
-            north_cards = analyzer.extract_hand_cards(dummy_strip)
-            # Adjust coordinates to full image
-            for card in north_cards:
-                if card.get("rank") and card.get("suit"):
-                    bbox = card.get("bbox", {})
-                    detected_cards.append({
-                        "rank": card["rank"],
-                        "suit": card["suit"],
-                        "cx": offset_x + bbox.get("x", 0) + bbox.get("w", 0) // 2,
-                        "cy": 240 + bbox.get("y", 0) + bbox.get("h", 0) // 2,
-                        "side": "North",
-                        "bbox": {
-                            "x": bbox.get("x", 0),
-                            "y": bbox.get("y", 0) + 240,
-                            "w": bbox.get("w", 0),
-                            "h": bbox.get("h", 0)
-                        }
-                    })
+            
+            # Strict white pixel ratio check to filter out card backs or empty background
+            hsv_dummy = cv2.cvtColor(dummy_strip, cv2.COLOR_BGR2HSV)
+            white_pixels = np.sum((hsv_dummy[:,:,1] < 30) & (hsv_dummy[:,:,2] > 200))
+            white_ratio = white_pixels / (dummy_strip.shape[0] * dummy_strip.shape[1])
+            
+            if white_ratio >= 0.15:
+                north_cards = analyzer.extract_hand_cards(dummy_strip)
+                # Adjust coordinates to full image
+                for card in north_cards:
+                    if card.get("rank") and card.get("suit"):
+                        bbox = card.get("bbox", {})
+                        detected_cards.append({
+                            "rank": card["rank"],
+                            "suit": card["suit"],
+                            "cx": offset_x + bbox.get("x", 0) + bbox.get("w", 0) // 2,
+                            "cy": 240 + bbox.get("y", 0) + bbox.get("h", 0) // 2,
+                            "side": "North",
+                            "bbox": {
+                                "x": bbox.get("x", 0),
+                                "y": bbox.get("y", 0) + 240,
+                                "w": bbox.get("w", 0),
+                                "h": bbox.get("h", 0)
+                            }
+                        })
         except Exception:
             pass
             
@@ -249,29 +256,35 @@ def detect_dummy_hands(img, analyzer):
     crops = []
     if h_img >= 600:
         if w_img >= 110:
-            west_crop = img[350:min(620, h_img), 0:110]
-            crops.append(("West", west_crop, 0, 350))
+            west_crop = img[320:min(620, h_img), 0:110]
+            crops.append(("West", west_crop, 0, 320))
             cv2.imwrite("debug/dummy_strip_west.png", west_crop)
         if w_img >= 400:
-            east_crop = img[350:min(620, h_img), 400:w_img]
-            crops.append(("East", east_crop, 400, 350))
+            east_crop = img[320:min(620, h_img), 400:w_img]
+            crops.append(("East", east_crop, 400, 320))
             cv2.imwrite("debug/dummy_strip_east.png", east_crop)
 
     for side, crop, offset_x, offset_y in crops:
         if crop.size == 0:
             continue
             
-        # Pre-check: skip if crop doesn't look like a card area
+        # Strict white pixel ratio check to filter out card backs or empty background
         hsv_crop = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
-        white_bg = np.sum((hsv_crop[:,:,1] < 50) & (hsv_crop[:,:,2] > 180))
-        red_suit = np.sum(cv2.inRange(hsv_crop, (0,40,40), (25,255,255)) + cv2.inRange(hsv_crop, (165,40,40), (180,255,255)) > 0)
-        black_suit = np.sum(cv2.inRange(hsv_crop, (0,0,0), (180,60,100)) > 0)
-        total_px = crop.shape[0] * crop.shape[1]
+        white_pixels = np.sum((hsv_crop[:,:,1] < 30) & (hsv_crop[:,:,2] > 200))
+        white_ratio = white_pixels / (crop.shape[0] * crop.shape[1])
         
-        if white_bg < 4000 or (red_suit + black_suit) < 100:
+        if white_ratio < 0.15:
             continue
             
         gray_crop = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+        
+        # Get PaddleOCR text recognition on the side crop
+        paddle_results = []
+        try:
+            from paddle_ocr import ocr_image
+            paddle_results = ocr_image(crop)
+        except Exception:
+            pass
         
         # Match ranks
         rank_detections = []
@@ -294,8 +307,8 @@ def detect_dummy_hands(img, analyzer):
                 
         filtered_ranks = _nms_boxes(rank_detections, threshold=0.3)
         
-        # Match suits
-        suit_detections = []
+        # Match suits (NMS per suit to prevent cross-suit suppression)
+        filtered_suits = []
         for s, tpl in analyzer.suit_templates.items():
             if tpl is None:
                 continue
@@ -304,6 +317,7 @@ def detect_dummy_hands(img, analyzer):
             # Local maxima check
             dilated = cv2.dilate(res, np.ones((3, 3)))
             loc = np.where((res == dilated) & (res >= 0.75))
+            s_detections = []
             for pt in zip(*loc[::-1]):
                 patch = gray_crop[pt[1]:pt[1]+h_tpl, pt[0]:pt[0]+w_tpl]
                 # Ensure the matched area is on a white card (contains white pixels)
@@ -311,9 +325,8 @@ def detect_dummy_hands(img, analyzer):
                     # Quick check: does the matched patch contain dark symbol pixels?
                     if np.min(patch) < 135:
                         score = res[pt[1], pt[0]]
-                        suit_detections.append((pt[0], pt[1], w_tpl, h_tpl, score, s))
-                
-        filtered_suits = _nms_boxes(suit_detections, threshold=0.3)
+                        s_detections.append((pt[0], pt[1], w_tpl, h_tpl, score, s))
+            filtered_suits.extend(_nms_boxes(s_detections, threshold=0.3))
         
         # Pair ranks and suits using spatial relationship (suit offset: dx [3, 13], dy [22, 38])
         paired_candidates = []
@@ -386,22 +399,118 @@ def detect_dummy_hands(img, analyzer):
             else:
                 rows[-1].append(cand)
                 
-        # Classify the suit of each row and build final detected_cards
+        # Classify the suit of each row using strict Bridge layout rules: Spade -> Heart -> Diamond -> Club
+        n_rows = len(rows)
+        row_colors = []
         for row in rows:
-            # Majority vote on color
             is_red_votes = [c["is_red"] for c in row]
-            is_red_row = (sum(is_red_votes) > len(is_red_votes) / 2)
+            row_colors.append(sum(is_red_votes) > len(is_red_votes) / 2)
             
-            # Sum scores based on color
-            if is_red_row:
-                heart_sum = sum(c["scores"].get("heart", 0) for c in row)
-                diamond_sum = sum(c["scores"].get("diamond", 0) for c in row)
-                row_suit = "heart" if heart_sum > diamond_sum else "diamond"
-            else:
-                spade_sum = sum(c["scores"].get("spade", 0) for c in row)
-                club_sum = sum(c["scores"].get("club", 0) for c in row)
-                row_suit = "spade" if spade_sum > club_sum else "club"
-                
+        all_valid_sequences = [
+            # Subsets of size 1
+            ["spade"], ["heart"], ["diamond"], ["club"],
+            # Subsets of size 2
+            ["spade", "heart"], ["spade", "diamond"], ["spade", "club"],
+            ["heart", "diamond"], ["heart", "club"], ["diamond", "club"],
+            # Subsets of size 3
+            ["spade", "heart", "diamond"], ["spade", "heart", "club"],
+            ["spade", "diamond", "club"], ["heart", "diamond", "club"],
+            # Subsets of size 4
+            ["spade", "heart", "diamond", "club"]
+        ]
+        suit_colors = {"spade": False, "heart": True, "diamond": True, "club": False}
+        
+        candidates = []
+        for seq in all_valid_sequences:
+            if len(seq) == n_rows:
+                seq_colors = [suit_colors[s] for s in seq]
+                if seq_colors == row_colors:
+                    candidates.append(seq)
+                    
+        if candidates:
+            # Choose candidate sequence with the highest total template score
+            best_seq = None
+            max_total_score = -float('inf')
+            for seq in candidates:
+                total_score = 0
+                for idx, suit_name in enumerate(seq):
+                    total_score += sum(c["scores"].get(suit_name, 0) for c in rows[idx])
+                if total_score > max_total_score:
+                    max_total_score = total_score
+                    best_seq = seq
+            row_suits = best_seq
+        else:
+            # Fallback: independent classification
+            row_suits = []
+            for idx, row in enumerate(rows):
+                is_red = row_colors[idx]
+                if is_red:
+                    heart_sum = sum(c["scores"].get("heart", 0) for c in row)
+                    diamond_sum = sum(c["scores"].get("diamond", 0) for c in row)
+                    row_suits.append("heart" if heart_sum > diamond_sum else "diamond")
+                else:
+                    spade_sum = sum(c["scores"].get("spade", 0) for c in row)
+                    club_sum = sum(c["scores"].get("club", 0) for c in row)
+                    row_suits.append("spade" if spade_sum > club_sum else "club")
+                    
+        # Process card assignments row by row
+        for r_idx, row in enumerate(rows):
+            row_suit = row_suits[r_idx]
+            
+            # Align row with PaddleOCR text boxes to override template matched ranks
+            if row and paddle_results:
+                row_cy = sum(c["ry"] for c in row) / len(row)
+                matching_res = None
+                for res in paddle_results:
+                    bbox = res["bbox"]
+                    cy = (bbox[0][1] + bbox[2][1]) / 2.0
+                    if abs(cy - row_cy) < 20:
+                        matching_res = res
+                        break
+                if matching_res:
+                    def parse_ranks(text):
+                        text = text.upper().replace(" ", "")
+                        ranks = []
+                        i = 0
+                        while i < len(text):
+                            if i + 1 < len(text) and text[i:i+2] == "10":
+                                ranks.append("T")
+                                i += 2
+                            else:
+                                char = text[i]
+                                if char in "AKQJT98765432":
+                                    ranks.append(char)
+                                    i += 1
+                                elif char == "1" and i + 1 < len(text) and text[i+1] == "0":
+                                    ranks.append("T")
+                                    i += 2
+                                elif char == "1":
+                                    ranks.append("T")
+                                    i += 1
+                                else:
+                                    i += 1
+                        return ranks
+                        
+                    ocr_ranks = parse_ranks(matching_res["text"])
+                    if ocr_ranks:
+                        # Sort row candidates horizontally from left to right
+                        row.sort(key=lambda x: x["rx"])
+                        x1 = min(pt[0] for pt in matching_res["bbox"])
+                        x2 = max(pt[0] for pt in matching_res["bbox"])
+                        w = x2 - x1
+                        for cand in row:
+                            best_ocr_rank = None
+                            min_dx = float('inf')
+                            for idx, r in enumerate(ocr_ranks):
+                                est_x = x1 + (idx + 0.5) * (w / len(ocr_ranks))
+                                dx = abs(cand["rx"] - est_x)
+                                if dx < min_dx:
+                                    min_dx = dx
+                                    best_ocr_rank = r
+                            # Override template rank if it matches horizontal position of OCR rank within 25px
+                            if best_ocr_rank and min_dx < 25:
+                                cand["r_label"] = best_ocr_rank
+                                
             # Assign suit to each card in the row and add to detected_cards
             for cand in row:
                 cx = cand["rx"] + cand["rw"] // 2 + offset_x
@@ -452,6 +561,22 @@ def detect_dummy_hands(img, analyzer):
             elif cx >= 0.78 * w_img and 0.22 * h_img <= cy < 0.75 * h_img:
                 east_dummy.append(card)
                 
+    # Single-dummy-side heuristic: only one side can be the dummy hand at any given time.
+    # Keep only the detections for the side with the maximum card count, clearing the others.
+    counts = {
+        "West": len(west_dummy),
+        "North": len(north_dummy),
+        "East": len(east_dummy)
+    }
+    best_side = max(counts, key=counts.get)
+    if counts[best_side] > 0:
+        if best_side != "West":
+            west_dummy = []
+        if best_side != "North":
+            north_dummy = []
+        if best_side != "East":
+            east_dummy = []
+            
     return {"West": west_dummy, "North": north_dummy, "East": east_dummy}
 
 def run_analysis(verbose=True):
