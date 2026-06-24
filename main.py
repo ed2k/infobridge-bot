@@ -259,9 +259,9 @@ def detect_dummy_hands(img, analyzer):
             west_crop = img[320:min(620, h_img), 0:110]
             crops.append(("West", west_crop, 0, 320))
             cv2.imwrite("debug/dummy_strip_west.png", west_crop)
-        if w_img >= 400:
-            east_crop = img[320:min(620, h_img), 400:w_img]
-            crops.append(("East", east_crop, 400, 320))
+        if w_img >= 380:
+            east_crop = img[320:min(620, h_img), 380:w_img]
+            crops.append(("East", east_crop, 380, 320))
             cv2.imwrite("debug/dummy_strip_east.png", east_crop)
 
     for side, crop, offset_x, offset_y in crops:
@@ -459,38 +459,49 @@ def detect_dummy_hands(img, analyzer):
             
             # Align row with PaddleOCR text boxes to override template matched ranks
             if row and paddle_results:
+                def parse_ranks(text):
+                    text = text.upper().replace(" ", "")
+                    ranks = []
+                    i = 0
+                    while i < len(text):
+                        if i + 1 < len(text) and text[i:i+2] == "10":
+                            ranks.append("T")
+                            i += 2
+                        else:
+                            char = text[i]
+                            if char in "AKQJT98765432":
+                                ranks.append(char)
+                                i += 1
+                            elif char == "1" and i + 1 < len(text) and text[i+1] == "0":
+                                ranks.append("T")
+                                i += 2
+                            elif char == "1":
+                                ranks.append("T")
+                                i += 1
+                            else:
+                                i += 1
+                    return ranks
+
                 row_cy = sum(c["ry"] for c in row) / len(row)
                 matching_res = None
+                best_rank_count = 0
+                min_cy_diff = float('inf')
                 for res in paddle_results:
                     bbox = res["bbox"]
                     cy = (bbox[0][1] + bbox[2][1]) / 2.0
-                    if abs(cy - row_cy) < 20:
-                        matching_res = res
-                        break
+                    diff = abs(cy - row_cy)
+                    if diff < 20:
+                        cand_ranks = parse_ranks(res["text"])
+                        rank_count = len(cand_ranks)
+                        if rank_count > best_rank_count:
+                            best_rank_count = rank_count
+                            min_cy_diff = diff
+                            matching_res = res
+                        elif rank_count == best_rank_count:
+                            if diff < min_cy_diff:
+                                min_cy_diff = diff
+                                matching_res = res
                 if matching_res:
-                    def parse_ranks(text):
-                        text = text.upper().replace(" ", "")
-                        ranks = []
-                        i = 0
-                        while i < len(text):
-                            if i + 1 < len(text) and text[i:i+2] == "10":
-                                ranks.append("T")
-                                i += 2
-                            else:
-                                char = text[i]
-                                if char in "AKQJT98765432":
-                                    ranks.append(char)
-                                    i += 1
-                                elif char == "1" and i + 1 < len(text) and text[i+1] == "0":
-                                    ranks.append("T")
-                                    i += 2
-                                elif char == "1":
-                                    ranks.append("T")
-                                    i += 1
-                                else:
-                                    i += 1
-                        return ranks
-                        
                     ocr_ranks = parse_ranks(matching_res["text"])
                     if ocr_ranks:
                         # Sort row candidates horizontally from left to right
@@ -498,18 +509,37 @@ def detect_dummy_hands(img, analyzer):
                         x1 = min(pt[0] for pt in matching_res["bbox"])
                         x2 = max(pt[0] for pt in matching_res["bbox"])
                         w = x2 - x1
-                        for cand in row:
-                            best_ocr_rank = None
-                            min_dx = float('inf')
+                        if len(ocr_ranks) > len(row):
+                            # Trust OCR entirely and reconstruct the row
+                            new_row = []
+                            avg_rw = sum(c["rw"] for c in row) / len(row) if row else 12
+                            avg_rh = sum(c["rh"] for c in row) / len(row) if row else 18
+                            avg_ry = sum(c["ry"] for c in row) / len(row) if row else row_cy
                             for idx, r in enumerate(ocr_ranks):
-                                est_x = x1 + (idx + 0.5) * (w / len(ocr_ranks))
-                                dx = abs(cand["rx"] - est_x)
-                                if dx < min_dx:
-                                    min_dx = dx
-                                    best_ocr_rank = r
-                            # Override template rank if it matches horizontal position of OCR rank within 25px
-                            if best_ocr_rank and min_dx < 25:
-                                cand["r_label"] = best_ocr_rank
+                                est_cx = x1 + (idx + 0.5) * (w / len(ocr_ranks))
+                                rx = int(est_cx - avg_rw / 2)
+                                new_row.append({
+                                    "rx": rx,
+                                    "ry": int(avg_ry),
+                                    "rw": int(avg_rw),
+                                    "rh": int(avg_rh),
+                                    "r_label": r
+                                })
+                            row = new_row
+                            rows[r_idx] = new_row
+                        else:
+                            for cand in row:
+                                best_ocr_rank = None
+                                min_dx = float('inf')
+                                for idx, r in enumerate(ocr_ranks):
+                                    est_x = x1 + (idx + 0.5) * (w / len(ocr_ranks))
+                                    dx = abs(cand["rx"] - est_x)
+                                    if dx < min_dx:
+                                        min_dx = dx
+                                        best_ocr_rank = r
+                                # Override template rank if it matches horizontal position of OCR rank within 25px
+                                if best_ocr_rank and min_dx < 25:
+                                    cand["r_label"] = best_ocr_rank
                                 
             # Assign suit to each card in the row and add to detected_cards
             for cand in row:

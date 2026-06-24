@@ -669,7 +669,7 @@ class BridgeAnalyzer:
             return best_match
         return None
 
-    def extract_card(self, card_img, is_hand=True, suit_img=None, suit_img_top=None, expected_suit_is_red=None):
+    def extract_card(self, card_img, is_hand=True, suit_img=None, suit_img_top=None, expected_suit_is_red=None, spacing_right=None):
         """
         Parses a single card image crop.
         Returns a tuple (rank, suit) or (None, None).
@@ -683,7 +683,10 @@ class BridgeAnalyzer:
         if h == 60:
             # Full top half captures rank reliably for loose spacing (player hand)
             # Narrower crop avoids adjacent-card bleed for tight spacing (dummy)
-            if "tight" in self.__dict__ and self.tight:
+            if spacing_right is not None and spacing_right < 35:
+                max_w = max(16, spacing_right)
+                rank_crop = card_img[2:38, 2:max_w]
+            elif "tight" in self.__dict__ and self.tight:
                 rank_crop = card_img[2:38, 2:28]
             else:
                 rank_crop = card_img[2:38, 2:36]
@@ -1305,6 +1308,25 @@ class BridgeAnalyzer:
             for p in g["peaks"]:
                 p["assigned_suit"] = suit_name
 
+        # Count same-suit cards and calculate spacing_right for each peak to determine tight crop boundary
+        for idx, p in enumerate(peaks):
+            suit_name = p["assigned_suit"]
+            num_same_suit = sum(1 for pk in peaks if pk["assigned_suit"] == suit_name)
+            
+            if num_same_suit >= 5:
+                expected_spacing = 20
+            elif num_same_suit == 4:
+                expected_spacing = 26
+            else:
+                expected_spacing = 40
+                
+            spacing_right = expected_spacing
+            if idx + 1 < len(peaks) and peaks[idx+1]["assigned_suit"] == suit_name:
+                real_spacing = peaks[idx+1]["x_suit"] - p["x_suit"]
+                spacing_right = min(spacing_right, real_spacing)
+                
+            p["spacing_right"] = spacing_right
+
         detected_cards = []
         card_crops_list = []
 
@@ -1363,7 +1385,7 @@ class BridgeAnalyzer:
             if pad_left_s > 0 or pad_right_s > 0:
                 suit_top = cv2.copyMakeBorder(suit_top, 0, 0, pad_left_s, pad_right_s, cv2.BORDER_CONSTANT, value=[255, 255, 255])
 
-            rank, suit_raw = self.extract_card(card_crop, suit_img=suit_crop_wide, suit_img_top=suit_top, expected_suit_is_red=p["color"] == "RED")
+            rank, suit_raw = self.extract_card(card_crop, suit_img=suit_crop_wide, suit_img_top=suit_top, expected_suit_is_red=p["color"] == "RED", spacing_right=p["spacing_right"])
             # Robust sequence-assigned suit
             if p["color"] == "RED":
                 suit = suit_raw or p.get("assigned_suit") or "heart"
@@ -1508,7 +1530,12 @@ class BridgeAnalyzer:
                     # Pre-shave below the suit symbol to clear any bottom bleed/suit symbols
                     shaved_card = self.shave_below_suit(card_crop)
                     
-                    if "tight" in self.__dict__ and self.tight:
+                    # Retrieve the specific card's spacing_right
+                    spacing_right = peaks[i].get("spacing_right")
+                    if spacing_right is not None and spacing_right < 35:
+                        max_w = max(16, spacing_right)
+                        rank_crop = shaved_card[2:38, 2:max_w]
+                    elif "tight" in self.__dict__ and self.tight:
                         rank_crop = shaved_card[2:38, 2:28]
                     else:
                         rank_crop = shaved_card[2:38, 2:36]
