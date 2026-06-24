@@ -1147,7 +1147,9 @@ def main():
     group.add_argument("--monitor", action="store_true", help="Start continuous bridge UI state monitor")
     group.add_argument("--run", action="store_true", help="Start continuous bridge play & decision runner")
     group.add_argument("--explain-last-bid", action="store_true", help="Click the last bid in history to extract its tooltip explanation")
-    
+    group.add_argument("--update-templates", action="store_true", help="Update rank templates from live screen capture")
+    group.add_argument("--generate-mock", action="store_true", help="Generate sample_board.png from live capture or synthetic fallback")
+
     parser.add_argument("--interval", type=float, default=2.0, help="Polling interval for monitoring in seconds (default: 2.0)")
     parser.add_argument("--dry-run", action="store_true", help="Dry run mode (logs decisions and actions without moving mouse)")
     parser.add_argument("--verbose", action="store_true", help="Verbose mode (logs detailed computer vision and template matching details)")
@@ -1172,6 +1174,12 @@ def main():
         run_monitoring(args.interval, verbose=args.verbose, save_play=args.save_play, output_dir=args.output_dir)
     elif args.run:
         run_decision_loop(args.interval, args.dry_run, verbose=args.verbose, once=args.once, save_play=args.save_play, output_dir=args.output_dir, action=args.action)
+    elif args.update_templates:
+        import update_templates_live
+        update_templates_live.main()
+    elif args.generate_mock:
+        import generate_mock
+        generate_mock.main()
 
 if __name__ == "__main__":
     main()

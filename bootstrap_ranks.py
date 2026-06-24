@@ -2,7 +2,7 @@
 """
 Bootstrap Card Rank Templates.
 Extracts verified rank templates (A, K, Q, J, T, 9, 8, 7, 6, 5, 4, 3, 2) from existing card crops
-in the debug folder. Uses multi-parameter Tesseract OCR consensus checking to guarantee correctness.
+in the debug folder. Uses PaddleOCR + Tesseract consensus to guarantee correctness.
 """
 
 import os
@@ -12,9 +12,15 @@ import numpy as np
 from collections import Counter
 from analyzer import BridgeAnalyzer
 
+try:
+    from paddle_ocr import ocr_text as paddle_ocr_text
+    HAS_PADDLE = True
+except ImportError:
+    HAS_PADDLE = False
+
 def get_consensus_ocr(img, analyzer):
     """
-    Runs Tesseract OCR using multiple crop boundaries, scaling factors,
+    Runs Tesseract + PaddleOCR using multiple crop boundaries, scaling factors,
     and PSM modes to return a confident consensus character.
     """
     votes = []
@@ -42,6 +48,22 @@ def get_consensus_ocr(img, analyzer):
                         votes.append(txt)
                 except Exception:
                     pass
+
+    if HAS_PADDLE:
+        for name, crop in crops.items():
+            if crop.size == 0:
+                continue
+            try:
+                text = paddle_ocr_text(crop, min_confidence=0.3)
+                if text:
+                    cleaned = text.strip().upper().replace(" ", "").replace("10", "T")
+                    if cleaned == "1":
+                        cleaned = "T"
+                    if cleaned in "AKQJT98765432":
+                        votes.append(cleaned)
+                        votes.append(cleaned)
+            except Exception:
+                pass
                     
     if votes:
         c = Counter(votes)

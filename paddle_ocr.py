@@ -24,6 +24,7 @@ def _get_paddle_ocr():
                 use_doc_unwarping=False,
                 use_textline_orientation=False,
                 lang="en",
+                engine="onnxruntime",
             )
         except ImportError:
             raise ImportError(

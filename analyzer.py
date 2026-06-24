@@ -749,6 +749,32 @@ class BridgeAnalyzer:
             if rank_text:
                 break
 
+        # Fallback: contrast-enhanced preprocessing for low-contrast cards
+        if not rank_text:
+            clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(4, 4))
+            gray_rank = cv2.cvtColor(rank_crop, cv2.COLOR_BGR2GRAY) if len(rank_crop.shape) == 3 else rank_crop
+            enhanced = clahe.apply(gray_rank)
+            for fx_val in [4.0, 3.0]:
+                scaled = cv2.resize(enhanced, (0, 0), fx=fx_val, fy=fx_val, interpolation=cv2.INTER_CUBIC)
+                for thresh_val in [127, 100, 150, "otsu"]:
+                    if thresh_val == "otsu":
+                        proc = cv2.threshold(scaled, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)[1]
+                    else:
+                        proc = cv2.threshold(scaled, thresh_val, 255, cv2.THRESH_BINARY)[1]
+                    for psm in [8, 10, 6]:
+                        custom_config = f"--psm {psm} -c tessedit_char_whitelist=AKQJT1098765432"
+                        try:
+                            raw_rank = pytesseract.image_to_string(proc, config=custom_config)
+                            rank_text = normalize_rank_text(raw_rank)
+                            if rank_text:
+                                break
+                        except Exception:
+                            pass
+                    if rank_text:
+                        break
+                if rank_text:
+                    break
+
         # Disambiguate 9 vs Q on red/black cards using bottom-half ink distribution
         if rank_text in ("9", "Q"):
             gray_rank = cv2.cvtColor(rank_crop, cv2.COLOR_BGR2GRAY)
@@ -759,18 +785,64 @@ class BridgeAnalyzer:
             right_ink = np.sum(binary[:, w//2:] > 0)
             bottom_ink = left_ink + right_ink
             
-            if bottom_ink > 50:  # Real card crop
+            if bottom_ink > 50:
                 ratio = right_ink / max(1, left_ink)
-                # Q has balanced ink in the bottom half (ratio around 1.1 - 1.3)
-                # 9 has highly skewed ink to the right (ratio around 1.6 - 3.5)
                 if ratio < 1.45:
                     rank_text = "Q"
                 else:
                     rank_text = "9"
             else:
-                # Mock card crop or fallback:
                 if rank_text == "9" and right_ink > left_ink * 1.5:
                     rank_text = "Q"
+
+        # Disambiguate 7 vs 5 using stroke analysis
+        if rank_text in ("7", "5"):
+            gray_rank = cv2.cvtColor(rank_crop, cv2.COLOR_BGR2GRAY) if len(rank_crop.shape) == 3 else rank_crop
+            h, w = gray_rank.shape
+            _, binary = cv2.threshold(gray_rank, 0, 255, cv2.THRESH_BINARY_INV | cv2.THRESH_OTSU)
+            # 7 has horizontal stroke at top; 5 has rounded shape with ink in middle-right
+            top_third = binary[:h//3, :]
+            mid_section = binary[h//4:3*h//4, w//4:3*w//4]
+            top_ink = np.sum(top_third > 0)
+            mid_ink = np.sum(mid_section > 0)
+            total_ink = np.sum(binary > 0)
+            if total_ink > 0:
+                top_ratio = top_ink / total_ink
+                mid_ratio = mid_ink / total_ink
+                # 7 has more ink at top (>30%), 5 has more in middle
+                if top_ratio > 0.30:
+                    rank_text = "7"
+                elif mid_ratio > 0.25:
+                    rank_text = "5"
+
+        # Disambiguate A vs 4 vs 6 using shape analysis
+        if rank_text in ("A", "4", "6"):
+            gray_rank = cv2.cvtColor(rank_crop, cv2.COLOR_BGR2GRAY) if len(rank_crop.shape) == 3 else rank_crop
+            h, w = gray_rank.shape
+            _, binary = cv2.threshold(gray_rank, 0, 255, cv2.THRESH_BINARY_INV | cv2.THRESH_OTSU)
+            # A has pointed top (ink concentrated in center), 4 has flat top, 6 has loop at bottom
+            top_row = binary[0, :]
+            bottom_half = binary[h//2:, :]
+            top_ink = np.sum(top_row > 0)
+            bottom_ink = np.sum(bottom_half > 0)
+            # 6 has significant ink in bottom half (loop)
+            if bottom_ink > w * 1.5 and rank_text in ("A", "4"):
+                rank_text = "6"
+            elif top_ink < 3 and rank_text in ("4", "6"):
+                rank_text = "A"
+
+        # Disambiguate T vs J using horizontal bar analysis
+        if rank_text in ("T", "J"):
+            gray_rank = cv2.cvtColor(rank_crop, cv2.COLOR_BGR2GRAY) if len(rank_crop.shape) == 3 else rank_crop
+            h, w = gray_rank.shape
+            _, binary = cv2.threshold(gray_rank, 0, 255, cv2.THRESH_BINARY_INV | cv2.THRESH_OTSU)
+            # T has wide horizontal bar at top, J has narrow top
+            top_row_ink = np.sum(binary[0, :] > 0)
+            # T should have ink across most of the width
+            if top_row_ink > w * 0.6:
+                rank_text = "T"
+            elif top_row_ink < w * 0.3:
+                rank_text = "J"
             
         # Extract Suit — use provided suit_img (from card's left edge) if available
         suit_crop_for_match = suit_img if suit_img is not None else suit_crop
@@ -900,6 +972,64 @@ class BridgeAnalyzer:
             else:
                 self.rank_templates[rank] = None
         return self.rank_templates[rank]
+
+    def paddle_verify_rank(self, card_crop, initial_rank=None):
+        """
+        Use PaddleOCR to verify or correct a card's rank from its crop.
+        Returns the PaddleOCR-recognized rank or the initial_rank if PaddleOCR
+        doesn't match a valid rank.
+        """
+        if not HAS_PADDLE:
+            return initial_rank
+
+        try:
+            h, w = card_crop.shape[:2]
+            if h == 60:
+                if getattr(self, 'tight', False):
+                    rank_crop = card_crop[2:38, 2:28]
+                else:
+                    rank_crop = card_crop[2:38, 2:36]
+            else:
+                rank_crop = card_crop[2:int(h*0.43), 5:int(w*0.45)]
+
+            if rank_crop.size == 0:
+                return initial_rank
+
+            # Try original first
+            text = paddle_ocr_text(rank_crop, min_confidence=0.3)
+            cleaned = self._normalize_rank_text(text)
+
+            # Fallback: contrast-enhanced version for low-contrast cards
+            if not cleaned:
+                gray = cv2.cvtColor(rank_crop, cv2.COLOR_BGR2GRAY) if len(rank_crop.shape) == 3 else rank_crop
+                clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(4, 4))
+                enhanced = clahe.apply(gray)
+                _, binary = cv2.threshold(enhanced, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
+                text = paddle_ocr_text(binary, min_confidence=0.3)
+                cleaned = self._normalize_rank_text(text)
+
+            if cleaned:
+                if self.verbose:
+                    print(f"  PaddleOCR verify: {initial_rank} -> {cleaned}")
+                return cleaned
+        except Exception:
+            pass
+
+        return initial_rank
+
+    def _normalize_rank_text(self, text):
+        """Normalize OCR text to a valid rank character."""
+        if not text:
+            return None
+        cleaned = text.strip().upper().replace(" ", "")
+        if cleaned == "10":
+            cleaned = "T"
+        elif cleaned == "1":
+            cleaned = "T"
+        elif cleaned in ("0", "O", "D"):
+            cleaned = "Q"
+        valid_ranks = {"A", "K", "Q", "J", "T", "9", "8", "7", "6", "5", "4", "3", "2"}
+        return cleaned if cleaned in valid_ranks else None
 
     def extract_card_candidates(self, card_img):
         """
@@ -1264,55 +1394,62 @@ class BridgeAnalyzer:
                 if self.verbose:
                     print(f"Global OCR error: {e}")
                     
-        # Consensus Resolution using template matching
+        # Consensus Resolution using template matching + PaddleOCR
         if len(detected_cards) >= 10:
             if best_ranks is not None and self.verbose:
                 print(f"Global OCR ranks (perfect match) candidate: {''.join(best_ranks)}")
             elif self.verbose:
-                print("Global OCR could not find perfect match for card count. Resolving local candidates via template matching.")
+                print("Global OCR could not find perfect match for card count. Resolving local candidates via template matching + PaddleOCR.")
                 
             for i, c in enumerate(detected_cards):
                 local_r = c.get("rank")
                 local_cands = local_candidates_list[i]
                 global_r = best_ranks[i] if best_ranks is not None else None
                 
-                # Set of candidates to evaluate
+                # Get PaddleOCR verification
+                card_crop = card_crops_list[i]
+                paddle_r = self.paddle_verify_rank(card_crop, initial_rank=None)
+
                 candidates = list(local_cands)
                 if global_r and global_r not in candidates:
                     candidates.append(global_r)
+                if paddle_r and paddle_r not in candidates:
+                    candidates.append(paddle_r)
                     
                 if candidates:
-                    card_crop = card_crops_list[i]
                     if "tight" in self.__dict__ and self.tight:
                         rank_crop = card_crop[2:38, 2:28]
                     else:
                         rank_crop = card_crop[2:38, 2:36]
                         
-                    # Score all candidates
                     scores = {}
                     for cand in candidates:
                         scores[cand] = self.score_rank_candidate(rank_crop, cand)
                         
-                    # Find best candidate
                     best_cand = max(scores, key=scores.get)
                     best_score = scores[best_cand]
                     
-                    # Determine local score
                     local_score = scores.get(local_r, -1.0) if local_r else -1.0
+                    paddle_score = scores.get(paddle_r, -1.0) if paddle_r else -1.0
                     
-                    # Override logic:
-                    # Default to local_r. Only override if best_cand is different,
-                    # has a high absolute score (>0.60), and is significantly better than local_score.
                     chosen_rank = local_r
                     if local_r is None:
-                        if best_score > 0.50:
+                        if paddle_r and paddle_score > 0.40:
+                            chosen_rank = paddle_r
+                        elif best_score > 0.50:
                             chosen_rank = best_cand
+                    elif paddle_r and paddle_r != local_r:
+                        # PaddleOCR override: if paddle agrees with global or template, and score is decent
+                        if paddle_r == global_r and paddle_score > 0.45:
+                            chosen_rank = paddle_r
+                        elif paddle_score > 0.60 and paddle_score > local_score + 0.10:
+                            chosen_rank = paddle_r
                     elif best_cand != local_r:
                         if best_score > 0.60 and best_score > local_score + 0.10:
                             chosen_rank = best_cand
                             
                     if self.verbose and chosen_rank != local_r:
-                        print(f"  Card {i+1}: local={local_r} (score={local_score:.3f}) -> overridden by={chosen_rank} (score={best_score:.3f})")
+                        print(f"  Card {i+1}: local={local_r} (score={local_score:.3f}) paddle={paddle_r} (score={paddle_score:.3f}) -> chosen={chosen_rank} (score={scores.get(chosen_rank, -1):.3f})")
                         
                     c["rank"] = chosen_rank
                 elif global_r:
