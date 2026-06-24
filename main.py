@@ -32,6 +32,77 @@ def images_are_similar(img1, img2, threshold=1.0):
     mae = np.mean(cv2.absdiff(img1, img2))
     return mae < threshold
 
+
+class RegionDeltaDetector:
+    """
+    Tracks pixel-level changes in sub-regions of captured images.
+    Only triggers re-detection when a region has changed significantly.
+    """
+
+    def __init__(self, change_threshold=2.0, min_change_pct=0.5):
+        """
+        Args:
+            change_threshold: Per-pixel MAE threshold to consider a pixel "changed".
+            min_change_pct: Minimum percentage of changed pixels to trigger re-detection.
+        """
+        self.change_threshold = change_threshold
+        self.min_change_pct = min_change_pct
+        self._prev_gray = {}
+
+    def _to_gray(self, img):
+        if img is None:
+            return None
+        if len(img.shape) == 3:
+            return cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        return img
+
+    def region_changed(self, key, img, roi=None):
+        """
+        Check if a region has changed since the last call.
+
+        Args:
+            key: Unique identifier for this region (e.g. "bidding", "trick", "hand").
+            img: Current BGR or grayscale image.
+            roi: Optional dict {x, y, width, height} to extract sub-region from img.
+
+        Returns:
+            True if the region has changed enough to warrant re-detection.
+        """
+        if img is None:
+            return True
+
+        if roi is not None:
+            x, y = int(roi["x"]), int(roi["y"])
+            w, h = int(roi["width"]), int(roi["height"])
+            img = img[y:y+h, x:x+w]
+
+        gray = self._to_gray(img)
+        if gray is None:
+            return True
+
+        prev = self._prev_gray.get(key)
+        self._prev_gray[key] = gray.copy()
+
+        if prev is None:
+            return True
+
+        if prev.shape != gray.shape:
+            return True
+
+        diff = cv2.absdiff(prev, gray)
+        changed_pixels = np.sum(diff > self.change_threshold)
+        total_pixels = diff.size
+        change_pct = (changed_pixels / total_pixels) * 100
+
+        return change_pct >= self.min_change_pct
+
+    def reset(self, key=None):
+        """Clear cached images. If key is None, clear all."""
+        if key is None:
+            self._prev_gray.clear()
+        else:
+            self._prev_gray.pop(key, None)
+
 # Setup instant SIGINT handler to ensure prompt Control-C termination
 def setup_signal_handler():
     def handle_sigint(sig, frame):
@@ -592,29 +663,21 @@ def run_monitoring(interval=2.0, verbose=False, save_play=False, output_dir="cap
         cap = ScreenCapture()
         analyzer = BridgeAnalyzer(verbose=verbose)
         ctrl = BridgeController()
+        delta = RegionDeltaDetector()
         
         last_bids = []
-        prev_bidding_img = None
-        prev_trick_img = None
-        prev_hand_img = None
         bids = []
         detected_trick = []
         valid_hand = []
         
         while True:
-            # Capture and extract bids
             bidding_img = cap.capture_bidding()
-            if prev_bidding_img is not None and images_are_similar(prev_bidding_img, bidding_img, threshold=1.0):
-                # Similar image, reuse bids
-                pass
-            else:
+            if delta.region_changed("bidding", bidding_img):
                 bids = analyzer.extract_bids(bidding_img)
-                prev_bidding_img = bidding_img.copy() if bidding_img is not None else None
             
             if save_play:
                 tracker.update_bids(bids)
             
-            # Check for changes in bids
             if bids != last_bids:
                 print(f"\n📢 Bids changed! {time.strftime('%H:%M:%S')}", flush=True)
                 prev_str = " -> ".join([f"{direction}:{bid}" for direction, bid in last_bids]) if last_bids else "None"
@@ -623,21 +686,15 @@ def run_monitoring(interval=2.0, verbose=False, save_play=False, output_dir="cap
                 print(f"Current : {curr_str}", flush=True)
                 last_bids = bids
                 
-            # Perform trick check
             trick_img = cap.capture_trick()
-            if prev_trick_img is not None and images_are_similar(prev_trick_img, trick_img, threshold=1.0):
-                # Similar image, reuse detected_trick
-                pass
-            else:
+            if delta.region_changed("trick", trick_img):
                 detected_trick = analyzer.extract_multiple_cards(trick_img)
-                prev_trick_img = trick_img.copy() if trick_img is not None else None
                 
             if save_play and trick_img is not None:
                 tracker.register_trick_state(detected_trick, trick_img.shape[1], trick_img.shape[0])
                 
             trick_str = ", ".join([f"{c['rank'] or '?'}{c['suit'] or '?'}" for c in detected_trick]) if detected_trick else "None"
             
-            # Determine if we are in play stage (has trick cards or bidding has ended)
             has_trick = len(detected_trick) > 0
             flat_bids = [b[1] for b in bids]
             bidding_ended = False
@@ -668,28 +725,20 @@ def run_monitoring(interval=2.0, verbose=False, save_play=False, output_dir="cap
             sys.stdout.write(f"\rTrick: [{trick_str}] | Dummies: [{dummy_str}]   ")
             sys.stdout.flush()
                 
-            # Track player hand only if saving play
             if save_play:
                 hand_img = cap.capture_player_hand()
-                if prev_hand_img is not None and images_are_similar(prev_hand_img, hand_img, threshold=1.0):
-                    pass
-                else:
+                if delta.region_changed("hand", hand_img):
                     hand = analyzer.extract_hand_cards(hand_img)
                     valid_hand = [c for c in hand if c.get("rank") is not None and c.get("suit") is not None]
-                    prev_hand_img = hand_img.copy() if hand_img is not None else None
                     
                 tracker.set_initial_hand(valid_hand)
                 
-                # Check if board has finished (initial hand was set, but now hand is empty)
                 if tracker.initial_hand and not valid_hand:
                     pbn_path, json_path = tracker.save_to_files(output_dir)
                     if pbn_path:
                         print(f"\n💾 Play saved successfully:\n   - {pbn_path}\n   - {json_path}", flush=True)
-                    # Reset for next game
                     tracker = GameTracker()
-                    prev_hand_img = None
-                    prev_trick_img = None
-                    prev_bidding_img = None
+                    delta.reset()
                 
             time.sleep(interval)
             
@@ -818,18 +867,15 @@ def run_decision_loop(interval=2.0, dry_run=False, verbose=False, once=False, sa
         cap = ScreenCapture()
         analyzer = BridgeAnalyzer(verbose=verbose)
         ctrl = BridgeController(dry_run=dry_run)
+        delta = RegionDeltaDetector()
         
         last_bids = []
         last_trick_cards = []
         played_in_current_trick = False
         last_hand_len = 0
         last_action_time = 0
-        COOLDOWN = 4.0  # Cooldown in seconds between actions to allow UI animation
+        COOLDOWN = 4.0
         last_hinted_state = None
-        
-        prev_bidding_img = None
-        prev_hand_img = None
-        prev_trick_img = None
         
         bids = []
         hand = []
@@ -840,44 +886,30 @@ def run_decision_loop(interval=2.0, dry_run=False, verbose=False, once=False, sa
         while True:
             current_time = time.time()
             
-            # 1. Capture Bids
             bidding_img = cap.capture_bidding()
-            if prev_bidding_img is not None and images_are_similar(prev_bidding_img, bidding_img, threshold=1.0):
-                pass
-            else:
+            if delta.region_changed("bidding", bidding_img):
                 bids = analyzer.extract_bids(bidding_img)
-                prev_bidding_img = bidding_img.copy() if bidding_img is not None else None
                 
             if save_play:
                 tracker.update_bids(bids)
             
-            # 2. Capture Hand
             hand_img = cap.capture_player_hand()
             import os; os.makedirs("debug", exist_ok=True)
             cv2.imwrite("debug/player_hand_area.png", hand_img)
-            if prev_hand_img is not None and images_are_similar(prev_hand_img, hand_img, threshold=1.0):
-                pass
-            else:
+            if delta.region_changed("hand", hand_img):
                 hand = analyzer.extract_hand_cards(hand_img)
                 valid_hand = [c for c in hand if c.get("rank") is not None and c.get("suit") is not None]
-                prev_hand_img = hand_img.copy() if hand_img is not None else None
                 
             if save_play:
                 tracker.set_initial_hand(valid_hand)
             
-            # 3. Capture Trick Cards
             trick_img = cap.capture_trick()
-            if prev_trick_img is not None and images_are_similar(prev_trick_img, trick_img, threshold=1.0):
-                pass
-            else:
+            if delta.region_changed("trick", trick_img):
                 trick_cards = analyzer.extract_multiple_cards(trick_img)
-                prev_trick_img = trick_img.copy() if trick_img is not None else None
                 
             if save_play and trick_img is not None:
                 tracker.register_trick_state(trick_cards, trick_img.shape[1], trick_img.shape[0])
             
-            # 4. Determine Game Stage
-            # Bidding is active if bidding hasn't ended (less than 3 passes) AND no cards are played in the trick area.
             has_trick_cards = len(trick_cards) > 0
             flat_bids = [b[1] for b in bids]
             bidding_ended = False
@@ -892,7 +924,6 @@ def run_decision_loop(interval=2.0, dry_run=False, verbose=False, once=False, sa
             
             is_bidding_active = not bidding_ended and not has_trick_cards and (len(hand) >= 13)
             
-            # Log stage transitions
             detected_stage = "Bidding" if is_bidding_active else "Play"
             if detected_stage != current_stage:
                 print(f"\n🔄 [Stage transition: {detected_stage}]", flush=True)
@@ -905,10 +936,10 @@ def run_decision_loop(interval=2.0, dry_run=False, verbose=False, once=False, sa
             suit_symbols = {"spade": "♠", "heart": "♥", "diamond": "♦", "club": "♣"}
             trick_str = " ".join([f"{c['rank']}{suit_symbols.get(c['suit'], '')}" for c in trick_cards])
             
-            # Detect dummy hands
             if detected_stage == "Play":
                 ui_img = cap.capture_ui()
-                dummy_hands = detect_dummy_hands(ui_img, analyzer)
+                if delta.region_changed("ui", ui_img):
+                    dummy_hands = detect_dummy_hands(ui_img, analyzer)
             else:
                 dummy_hands = {"West": [], "North": [], "East": []}
                 
@@ -921,29 +952,23 @@ def run_decision_loop(interval=2.0, dry_run=False, verbose=False, once=False, sa
             
             print(f"📸 Scan: Stage={detected_stage} | Bids=[{bids_str}] | Hand=[{hand_str}] | Trick=[{trick_str}] | Dummies=[{dummy_str}]", flush=True)
 
-            # Capture and display hint text (runs every scan)
             if is_bidding_active:
                 hint_img = cap.capture_bidding_hint()
-                hint_text = analyzer.extract_bidding_hint(hint_img)
-                if hint_text:
-                    print(f"💡 Hint: {hint_text}", flush=True)
+                if delta.region_changed("hint", hint_img):
+                    hint_text = analyzer.extract_bidding_hint(hint_img)
+                    if hint_text:
+                        print(f"💡 Hint: {hint_text}", flush=True)
 
-            # If we have no cards left, the board is finished
             if not valid_hand:
                 if current_stage != "Waiting":
                     print("⏳ Board inactive or hand empty. Waiting...", flush=True)
                     current_stage = "Waiting"
-                # Save captured play if tracker has data
                 if save_play and tracker.initial_hand:
                     pbn_path, json_path = tracker.save_to_files(output_dir)
                     if pbn_path:
                         print(f"\n💾 Play saved successfully:\n   - {pbn_path}\n   - {json_path}", flush=True)
-                    # Reset tracker for the next game
                     tracker = GameTracker()
-                # Reset prev images to force re-evaluation when cards reappear
-                prev_hand_img = None
-                prev_trick_img = None
-                prev_bidding_img = None
+                delta.reset()
                 last_hinted_state = None
                 if once:
                     print("\nSingle-pass mode complete (no active hand detected).", flush=True)
