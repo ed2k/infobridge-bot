@@ -11,6 +11,12 @@ import numpy as np
 import pytesseract
 from PIL import Image
 
+try:
+    from paddle_ocr import ocr_text as paddle_ocr_text, ocr_with_positions as paddle_ocr_positions
+    HAS_PADDLE = True
+except ImportError:
+    HAS_PADDLE = False
+
 class BridgeAnalyzer:
     _DIRECTION_MAP = {"SOUTH": "S", "NORTH": "N", "EAST": "E", "WEST": "W"}
 
@@ -117,6 +123,15 @@ class BridgeAnalyzer:
         return self._extract_bids_structured(bidding_img, fx=fx, with_bboxes=True)
 
     def extract_bidding_hint(self, hint_img, fx=4.0):
+        if HAS_PADDLE:
+            try:
+                text = paddle_ocr_text(hint_img, min_confidence=0.3)
+                if text:
+                    return re.sub(r'\s+', ' ', text).strip()
+            except Exception as e:
+                if self.verbose:
+                    print(f"PaddleOCR hint failed, falling back to Tesseract: {e}")
+
         processed = self.preprocess_for_ocr(hint_img, fx=fx, thresh_val=None)
         text = pytesseract.image_to_string(
             processed, config="--psm 6 --oem 3"
@@ -129,6 +144,13 @@ class BridgeAnalyzer:
     def _extract_bids_structured(self, bidding_img, fx=4.0, with_bboxes=False):
         import csv
         from io import StringIO
+
+        if HAS_PADDLE:
+            try:
+                return self._extract_bids_paddle(bidding_img, fx=fx, with_bboxes=with_bboxes)
+            except Exception as e:
+                if self.verbose:
+                    print(f"PaddleOCR bids failed, falling back to Tesseract: {e}")
 
         processed = self.preprocess_for_ocr(bidding_img, thresh_val=None)
 
@@ -358,6 +380,112 @@ class BridgeAnalyzer:
 
             row_bids.sort()
             for entry in row_bids:
+                if with_bboxes:
+                    _, direction, std_text, bbox = entry
+                    results.append({"direction": direction, "bid": std_text, "bbox": bbox})
+                else:
+                    _, direction, std_text, _ = entry
+                    results.append((direction, std_text))
+
+        return results
+
+    def _extract_bids_paddle(self, bidding_img, fx=4.0, with_bboxes=False):
+        """Extract bids using PaddleOCR for text detection."""
+        detections = paddle_ocr_positions(bidding_img, min_confidence=0.3)
+
+        if not detections:
+            return []
+
+        img_h = bidding_img.shape[0]
+
+        header_candidates = []
+        bid_candidates = []
+
+        for text, cx, cy, w, h in detections:
+            text_clean = text.strip().upper()
+            if not text_clean:
+                continue
+
+            dir_key = self.clean_header_text(text_clean)
+            if dir_key and cy < img_h * 0.35:
+                header_candidates.append((cx, cy, dir_key))
+            elif cy >= img_h * 0.25:
+                bid_candidates.append((cx, cy, text_clean, w, h))
+
+        if len(header_candidates) < 2:
+            return []
+
+        header_candidates.sort(key=lambda x: x[0])
+
+        min_cx = header_candidates[0][0]
+        spacings = [header_candidates[i+1][0] - header_candidates[i][0]
+                     for i in range(len(header_candidates) - 1)]
+        col_width = sum(spacings) / len(spacings) if spacings else 150.0
+
+        full_order = ["N", "E", "S", "W"]
+        best_rotation = full_order
+        best_c0 = min_cx
+        max_matches = -1
+
+        for leftmost_slot in range(4):
+            candidate_c0 = min_cx - (leftmost_slot * col_width)
+            for r in range(4):
+                candidate_rotation = full_order[r:] + full_order[:r]
+                matches = 0
+                for cx, cy, direction in header_candidates:
+                    slot_idx = int(round((cx - candidate_c0) / col_width))
+                    if 0 <= slot_idx < 4 and candidate_rotation[slot_idx] == direction:
+                        matches += 1
+                if matches > max_matches:
+                    max_matches = matches
+                    best_rotation = candidate_rotation
+                    best_c0 = candidate_c0
+
+        col_centers = [best_c0 + idx * col_width for idx in range(4)]
+        col_dirs = best_rotation
+
+        bid_words = []
+        for cx, cy, text, w, h in bid_candidates:
+            closest_idx = 0
+            min_dist = float('inf')
+            for idx, center in enumerate(col_centers):
+                dist = abs(cx - center)
+                if dist < min_dist:
+                    min_dist = dist
+                    closest_idx = idx
+
+            std_text = self.standardize_bid(text)
+
+            bid_pattern = re.compile(
+                r'^(PASS|PAS|PA|PASSED|DBL|DOUBLE|RDBL|REDOUBLE|X|XX|'
+                r'[1-7]\s*(?:NT|N|S|H|D|C|SPADES|HEARTS|DIAMONDS|CLUBS))$',
+                re.IGNORECASE
+            )
+
+            if bid_pattern.match(std_text):
+                direction = col_dirs[closest_idx]
+                if with_bboxes:
+                    bbox = {"x": cx - w/2, "y": cy - h/2, "w": w, "h": h}
+                    bid_words.append((closest_idx, direction, std_text, bbox))
+                else:
+                    bid_words.append((closest_idx, direction, std_text, None))
+
+        bid_words.sort(key=lambda x: x[1])
+
+        word_rows = []
+        if bid_words:
+            current_row = [bid_words[0]]
+            for w in bid_words[1:]:
+                if abs(w[1] - current_row[-1][1]) < 0.5:
+                    current_row.append(w)
+                else:
+                    word_rows.append(current_row)
+                    current_row = [w]
+            word_rows.append(current_row)
+
+        results = []
+        for row in word_rows:
+            for entry in row:
                 if with_bboxes:
                     _, direction, std_text, bbox = entry
                     results.append({"direction": direction, "bid": std_text, "bbox": bbox})
@@ -1049,8 +1177,32 @@ class BridgeAnalyzer:
         best_ranks = None
         if len(detected_cards) >= 10:
             try:
-                import pytesseract as pt
-                gray_strip = cv2.cvtColor(hand_img_cropped, cv2.COLOR_BGR2GRAY)
+                if HAS_PADDLE:
+                    paddle_text = paddle_ocr_text(hand_img_cropped, min_confidence=0.3)
+                    if paddle_text:
+                        raw_chars = [c for c in paddle_text.upper() if c in "AKQJT9876543210OD"]
+                        cleaned_ranks = []
+                        i = 0
+                        while i < len(raw_chars):
+                            char = raw_chars[i]
+                            if char == '1' and i + 1 < len(raw_chars) and raw_chars[i+1] == '0':
+                                cleaned_ranks.append('T')
+                                i += 2
+                            elif char == '1':
+                                cleaned_ranks.append('T')
+                                i += 1
+                            elif char in ['0', 'O', 'D']:
+                                cleaned_ranks.append('Q')
+                                i += 1
+                            else:
+                                cleaned_ranks.append(char)
+                                i += 1
+                        if len(cleaned_ranks) >= len(detected_cards):
+                            best_ranks = cleaned_ranks[:len(detected_cards)]
+
+                if best_ranks is None:
+                    import pytesseract as pt
+                    gray_strip = cv2.cvtColor(hand_img_cropped, cv2.COLOR_BGR2GRAY)
                 scaled_strip = cv2.resize(gray_strip, (0, 0), fx=3, fy=3, interpolation=cv2.INTER_CUBIC)
                 
                 # Sweeping thresholds to find the most complete rank list matching detected_cards count
@@ -1178,11 +1330,28 @@ class BridgeAnalyzer:
         import re
         from io import StringIO
 
-        # If max_y is specified, crop the image to exclude everything below max_y
         if max_y is not None:
             max_y_rel = int(max_y - ui_roi["y"])
             if 0 < max_y_rel < ui_img.shape[0]:
                 ui_img = ui_img[0:max_y_rel, :]
+
+        if HAS_PADDLE:
+            try:
+                positions = paddle_ocr_positions(ui_img, min_confidence=0.3)
+                for text, cx, cy, w, h in positions:
+                    cleaned = re.sub(r'[^a-zA-Z0-9]', '', text)
+                    if cleaned.upper() == target_text.upper() or text.upper() == target_text.upper():
+                        img_h = ui_img.shape[0]
+                        ratio = cy / img_h
+                        if 0.3 <= ratio <= 0.95:
+                            gx = int(ui_roi["x"] + cx)
+                            gy = int(ui_roi["y"] + cy)
+                            if self.verbose:
+                                print(f"🔍 locate_ui_text_button: Found '{target_text}' via PaddleOCR at ({gx}, {gy})")
+                            return (gx, gy)
+            except Exception as e:
+                if self.verbose:
+                    print(f"PaddleOCR button search failed, falling back to Tesseract: {e}")
 
         # Try with multiple configurations (PSM modes and threshold configurations)
         configs = [

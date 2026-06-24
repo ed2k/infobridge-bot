@@ -13,6 +13,12 @@ import csv
 from io import StringIO
 import pytesseract
 
+try:
+    from paddle_ocr import ocr_with_positions as paddle_ocr_positions
+    HAS_PADDLE = True
+except ImportError:
+    HAS_PADDLE = False
+
 
 class UIDetector:
     """Detects bridge UI elements dynamically from screen captures."""
@@ -77,6 +83,13 @@ class UIDetector:
         Detect N/E/S/W column positions in the bidding table from OCR data.
         Returns ordered list of (direction, center_x) and the column width.
         """
+        if HAS_PADDLE:
+            try:
+                return self._detect_bidding_columns_paddle(bidding_img)
+            except Exception as e:
+                if self.verbose:
+                    print(f"PaddleOCR column detection failed, falling back to Tesseract: {e}")
+
         gray = cv2.cvtColor(bidding_img, cv2.COLOR_BGR2GRAY)
         scaled = cv2.resize(gray, (0, 0), fx=fx, fy=fx, interpolation=cv2.INTER_CUBIC)
         
@@ -149,6 +162,52 @@ class UIDetector:
             print(f"🔍 UIDetector: Bidding columns: {cols}, width={col_width / fx:.0f}px")
         
         return cols, col_width / fx
+
+    def _detect_bidding_columns_paddle(self, bidding_img):
+        """Detect bidding columns using PaddleOCR."""
+        detections = paddle_ocr_positions(bidding_img, min_confidence=0.3)
+
+        direction_map = {"SOUTH": "S", "NORTH": "N", "EAST": "E", "WEST": "W"}
+        img_h = bidding_img.shape[0]
+
+        header_words = []
+        for text, cx, cy, w, h in detections:
+            cleaned = re.sub(r'[^a-zA-Z]', '', text).upper()
+            if not cleaned:
+                continue
+
+            dir_key = None
+            if cleaned in direction_map:
+                dir_key = direction_map[cleaned]
+            else:
+                for full_word, direction in direction_map.items():
+                    if full_word.startswith(cleaned):
+                        dir_key = direction
+                        break
+
+            if dir_key and cy < img_h * 0.35:
+                header_words.append((int(cx), dir_key, int(cy)))
+
+        if len(header_words) < 2:
+            return [], 0
+
+        header_words.sort()
+
+        min_top = min(hw[2] for hw in header_words)
+        filtered = [hw for hw in header_words if hw[2] - min_top < 30]
+
+        if len(filtered) < 2:
+            filtered = header_words[:4]
+
+        spacings = [filtered[i + 1][0] - filtered[i][0] for i in range(len(filtered) - 1)]
+        col_width = sum(spacings) / len(spacings) if spacings else 150.0
+
+        cols = [(hw[1], hw[0]) for hw in filtered]
+
+        if self.verbose:
+            print(f"🔍 UIDetector: Bidding columns (PaddleOCR): {cols}, width={col_width:.0f}px")
+
+        return cols, col_width
 
     def detect_hand_card_peaks(self, hand_img, min_peaks=4):
         """
