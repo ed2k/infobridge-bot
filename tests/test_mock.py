@@ -21,12 +21,12 @@ def main():
     generate_mock.main()
         
     # Read the full mock image
-    img = cv2.imread("sample_board.png")
+    img = cv2.imread(os.path.join("debug", "sample_board.png"))
     if img is None:
-        print("❌ Error: Could not read sample_board.png.")
+        print("❌ Error: Could not read debug/sample_board.png.")
         return
         
-    print("Loaded sample_board.png successfully.")
+    print("Loaded debug/sample_board.png successfully.")
     
     # Mock Coordinate Map matching the dimensions in generate_mock.py
     mock_config = {

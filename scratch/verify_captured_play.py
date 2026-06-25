@@ -24,9 +24,9 @@ def run_integration_test():
     import generate_mock
     generate_mock.main()
     
-    img = cv2.imread("sample_board.png")
+    img = cv2.imread(os.path.join("debug", "sample_board.png"))
     if img is None:
-        print("❌ Error: sample_board.png not found.")
+        print("❌ Error: debug/sample_board.png not found.")
         return False
 
     # Mock Coordinate Map matching generate_mock.py

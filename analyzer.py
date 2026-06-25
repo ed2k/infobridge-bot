@@ -828,10 +828,10 @@ class BridgeAnalyzer:
             bottom_half = binary[h//2:, :]
             top_ink = np.sum(top_row > 0)
             bottom_ink = np.sum(bottom_half > 0)
-            # 6 has significant ink in bottom half (loop)
-            if bottom_ink > w * 1.5 and rank_text in ("A", "4"):
+            # 6 has significant ink in bottom half (loop). Do not rewrite '4' since it naturally contains stem/bar ink.
+            if bottom_ink > w * 1.5 and rank_text == "A":
                 rank_text = "6"
-            elif top_ink < 3 and rank_text in ("4", "6"):
+            elif top_ink < 3 and rank_text == "6":
                 rank_text = "A"
 
         # Disambiguate T vs J using horizontal bar analysis

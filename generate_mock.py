@@ -139,7 +139,8 @@ def generate_synthetic():
 
 
 def main():
-    output_path = "sample_board.png"
+    os.makedirs("debug", exist_ok=True)
+    output_path = os.path.join("debug", "sample_board.png")
 
     print("Attempting live screen capture...")
     live_img = capture_live_composite()

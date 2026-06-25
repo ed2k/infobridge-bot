@@ -18,10 +18,10 @@
         "height": 180
     },
     "trick_roi": {
-        "x": 1313,
-        "y": 598,
-        "width": 234,
-        "height": 270
+        "x": 1290,
+        "y": 580,
+        "width": 270,
+        "height": 280
     },
     "player_hand_roi": {
         "x": 1170,

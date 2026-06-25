@@ -10,15 +10,17 @@ import shutil
 import tempfile
 from detector import UIDetector
 
+MOCK_IMAGE_PATH = os.path.join("debug", "sample_board.png")
+
 def test_find_suit_button_positions():
     print("Testing find_suit_button_positions...")
     # Generate sample board if it doesn't exist
-    if not os.path.exists("sample_board.png"):
+    if not os.path.exists(MOCK_IMAGE_PATH):
         import generate_mock
         generate_mock.main()
         
-    img = cv2.imread("sample_board.png")
-    assert img is not None, "Could not load sample_board.png"
+    img = cv2.imread(MOCK_IMAGE_PATH)
+    assert img is not None, f"Could not load {MOCK_IMAGE_PATH}"
     
     det = UIDetector(verbose=True)
     
@@ -52,7 +54,7 @@ def test_find_suit_button_positions():
 
 def test_detect_game_panel():
     print("Testing detect_game_panel...")
-    img = cv2.imread("sample_board.png")
+    img = cv2.imread(MOCK_IMAGE_PATH)
     det = UIDetector(verbose=True)
     
     panel = det.detect_game_panel(img)
@@ -63,7 +65,7 @@ def test_detect_game_panel():
 
 def test_detect_bidding_columns():
     print("Testing detect_bidding_columns...")
-    img = cv2.imread("sample_board.png")
+    img = cv2.imread(MOCK_IMAGE_PATH)
     det = UIDetector(verbose=True)
     
     # crop bidding ROI
@@ -79,7 +81,7 @@ def test_detect_bidding_columns():
 
 def test_detect_hand_card_peaks():
     print("Testing detect_hand_card_peaks...")
-    img = cv2.imread("sample_board.png")
+    img = cv2.imread(MOCK_IMAGE_PATH)
     det = UIDetector(verbose=True)
     
     player_hand_roi = {"x": 300, "y": 600, "width": 500, "height": 60}
@@ -92,7 +94,7 @@ def test_detect_hand_card_peaks():
 
 def test_auto_bootstrap_templates():
     print("Testing auto_bootstrap_templates...")
-    img = cv2.imread("sample_board.png")
+    img = cv2.imread(MOCK_IMAGE_PATH)
     det = UIDetector(verbose=True)
     
     player_hand_roi = {"x": 300, "y": 600, "width": 500, "height": 60}
@@ -108,7 +110,7 @@ def test_auto_bootstrap_templates():
 
 def test_vulnerability_and_dealer():
     print("Testing vulnerability and dealer detection...")
-    img = cv2.imread("sample_board.png")
+    img = cv2.imread(MOCK_IMAGE_PATH)
     det = UIDetector(verbose=True)
     
     vul = det.detect_vulnerability(img)

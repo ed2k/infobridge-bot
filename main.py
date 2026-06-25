@@ -1305,7 +1305,7 @@ def main():
     group.add_argument("--run", action="store_true", help="Start continuous bridge play & decision runner")
     group.add_argument("--explain-last-bid", action="store_true", help="Click the last bid in history to extract its tooltip explanation")
     group.add_argument("--update-templates", action="store_true", help="Update rank templates from live screen capture")
-    group.add_argument("--generate-mock", action="store_true", help="Generate sample_board.png from live capture or synthetic fallback")
+    group.add_argument("--generate-mock", action="store_true", help="Generate debug/sample_board.png from live capture or synthetic fallback")
 
     parser.add_argument("--interval", type=float, default=2.0, help="Polling interval for monitoring in seconds (default: 2.0)")
     parser.add_argument("--dry-run", action="store_true", help="Dry run mode (logs decisions and actions without moving mouse)")
