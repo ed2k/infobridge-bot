@@ -1191,7 +1191,7 @@ class BridgeAnalyzer:
             return max_val
         return -1.0
 
-    def extract_hand_cards(self, hand_img):
+    def extract_hand_cards(self, hand_img, is_east_west=False):
         """
         Extracts cards from a player hand row crop.
         Finds individual cards by finding peaks in the smoothed vertical projection
@@ -1200,6 +1200,10 @@ class BridgeAnalyzer:
         """
         h_strip = hand_img.shape[0]
         w_strip = hand_img.shape[1]
+        
+        # Auto-detect East/West dummy by narrow strip width (e.g. < 200 px)
+        if w_strip < 200:
+            is_east_west = True
         
         # Dynamically find the card strip vertically within hand_img to handle tall/calibrated crops
         hsv_full = cv2.cvtColor(hand_img, cv2.COLOR_BGR2HSV)
@@ -1308,23 +1312,30 @@ class BridgeAnalyzer:
             for p in g["peaks"]:
                 p["assigned_suit"] = suit_name
 
-        # Count same-suit cards and calculate spacing_right for each peak to determine tight crop boundary
+        # Calculate spacing_right for each peak to determine tight crop boundary
         for idx, p in enumerate(peaks):
             suit_name = p["assigned_suit"]
-            num_same_suit = sum(1 for pk in peaks if pk["assigned_suit"] == suit_name)
-            
-            if num_same_suit >= 5:
-                expected_spacing = 20
-            elif num_same_suit == 4:
-                expected_spacing = 26
+            if is_east_west:
+                # Previous approach for East/West dummy
+                num_same_suit = sum(1 for pk in peaks if pk["assigned_suit"] == suit_name)
+                if num_same_suit >= 5:
+                    expected_spacing = 20
+                elif num_same_suit == 4:
+                    expected_spacing = 26
+                else:
+                    expected_spacing = 40
+                    
+                spacing_right = expected_spacing
+                if idx + 1 < len(peaks) and peaks[idx+1]["assigned_suit"] == suit_name:
+                    real_spacing = peaks[idx+1]["x_suit"] - p["x_suit"]
+                    spacing_right = min(spacing_right, real_spacing)
             else:
-                expected_spacing = 40
-                
-            spacing_right = expected_spacing
-            if idx + 1 < len(peaks) and peaks[idx+1]["assigned_suit"] == suit_name:
-                real_spacing = peaks[idx+1]["x_suit"] - p["x_suit"]
-                spacing_right = min(spacing_right, real_spacing)
-                
+                # Simplified approach for player hand and North dummy hand
+                spacing_right = 40
+                if idx + 1 < len(peaks) and peaks[idx+1]["assigned_suit"] == suit_name:
+                    real_spacing = peaks[idx+1]["x_suit"] - p["x_suit"]
+                    spacing_right = min(40, real_spacing)
+                    
             p["spacing_right"] = spacing_right
 
         detected_cards = []
