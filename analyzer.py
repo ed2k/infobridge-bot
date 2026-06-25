@@ -818,21 +818,7 @@ class BridgeAnalyzer:
                 elif mid_ratio > 0.25:
                     rank_text = "5"
 
-        # Disambiguate A vs 4 vs 6 using shape analysis
-        if rank_text in ("A", "4", "6"):
-            gray_rank = cv2.cvtColor(rank_crop, cv2.COLOR_BGR2GRAY) if len(rank_crop.shape) == 3 else rank_crop
-            h, w = gray_rank.shape
-            _, binary = cv2.threshold(gray_rank, 0, 255, cv2.THRESH_BINARY_INV | cv2.THRESH_OTSU)
-            # A has pointed top (ink concentrated in center), 4 has flat top, 6 has loop at bottom
-            top_row = binary[0, :]
-            bottom_half = binary[h//2:, :]
-            top_ink = np.sum(top_row > 0)
-            bottom_ink = np.sum(bottom_half > 0)
-            # 6 has significant ink in bottom half (loop). Do not rewrite '4' since it naturally contains stem/bar ink.
-            if bottom_ink > w * 1.5 and rank_text == "A":
-                rank_text = "6"
-            elif top_ink < 3 and rank_text == "6":
-                rank_text = "A"
+        # A, 4, 6 are recognized highly reliably by Tesseract raw OCR, so no override is needed.
 
         # Disambiguate T vs J using horizontal bar analysis
         if rank_text in ("T", "J"):
@@ -1401,7 +1387,7 @@ class BridgeAnalyzer:
             if p["color"] == "RED":
                 suit = suit_raw or p.get("assigned_suit") or "heart"
             else:
-                suit = p.get("assigned_suit") or suit_raw or "spade"
+                suit = suit_raw or p.get("assigned_suit") or "spade"
 
             # Collect candidates
             cands = self.extract_card_candidates(card_crop)
