@@ -820,19 +820,6 @@ class BridgeAnalyzer:
 
         # A, 4, 6 are recognized highly reliably by Tesseract raw OCR, so no override is needed.
 
-        # Disambiguate T vs J using horizontal bar analysis
-        if rank_text in ("T", "J"):
-            gray_rank = cv2.cvtColor(rank_crop, cv2.COLOR_BGR2GRAY) if len(rank_crop.shape) == 3 else rank_crop
-            h, w = gray_rank.shape
-            _, binary = cv2.threshold(gray_rank, 0, 255, cv2.THRESH_BINARY_INV | cv2.THRESH_OTSU)
-            # T has wide horizontal bar at top, J has narrow top
-            top_row_ink = np.sum(binary[0, :] > 0)
-            # T should have ink across most of the width
-            if top_row_ink > w * 0.6:
-                rank_text = "T"
-            elif top_row_ink < w * 0.3:
-                rank_text = "J"
-            
         # Extract Suit — use provided suit_img (from card's left edge) if available
         suit_crop_for_match = suit_img if suit_img is not None else suit_crop
         suit = None
