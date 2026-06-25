@@ -484,14 +484,17 @@ def detect_dummy_hands(img, analyzer):
 
                 row_cy = sum(c["ry"] for c in row) / len(row)
                 
-                # Gather all aligned OCR boxes (within 25px vertically, cx >= 15 horizontally)
+                # Gather all aligned OCR boxes (within 25px vertically, cx >= 15 horizontally for East crop)
                 aligned_ocr_boxes = []
+                min_cx = 15 if offset_x > 0 else 0
                 for res in paddle_results:
+                    if res.get("confidence", 1.0) < 0.80:
+                        continue
                     bbox = res["bbox"]
                     cy = (bbox[0][1] + bbox[2][1]) / 2.0
                     cx = (bbox[0][0] + bbox[1][0]) / 2.0
                     diff = abs(cy - row_cy)
-                    if diff < 25 and cx >= 15:
+                    if diff < 25 and cx >= min_cx:
                         aligned_ocr_boxes.append(res)
                 
                 if aligned_ocr_boxes:
