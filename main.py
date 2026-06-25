@@ -11,6 +11,7 @@ import signal
 import os
 import cv2
 import numpy as np
+import threading
 from capture import ScreenCapture
 from analyzer import BridgeAnalyzer
 from controller import BridgeController
@@ -111,6 +112,111 @@ def setup_signal_handler():
     signal.signal(signal.SIGINT, handle_sigint)
 
 setup_signal_handler()
+
+class GameState:
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.bids = []
+        self.hand = []
+        self.valid_hand = []
+        self.trick_cards = []
+        self.dummy_hands = {"West": [], "North": [], "East": []}
+        self.hint_text = None
+        
+    def update_bids(self, bids):
+        with self.lock:
+            self.bids = bids
+            
+    def update_hand(self, hand, valid_hand):
+        with self.lock:
+            self.hand = hand
+            self.valid_hand = valid_hand
+            
+    def update_trick(self, trick_cards):
+        with self.lock:
+            self.trick_cards = trick_cards
+            
+    def update_dummies(self, dummy_hands):
+        with self.lock:
+            self.dummy_hands = dummy_hands
+            
+    def update_hint(self, hint_text):
+        with self.lock:
+            self.hint_text = hint_text
+            
+    def get_snapshot(self):
+        with self.lock:
+            return {
+                "bids": list(self.bids),
+                "hand": list(self.hand),
+                "valid_hand": list(self.valid_hand),
+                "trick_cards": list(self.trick_cards),
+                "dummy_hands": {k: list(v) for k, v in self.dummy_hands.items()},
+                "hint_text": self.hint_text
+            }
+
+class DetectionTaskQueue:
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.condition = threading.Condition(self.lock)
+        self.tasks = {}
+        self.order = []
+        self.stopped = False
+        
+    def put(self, region_key, img):
+        with self.lock:
+            if self.stopped:
+                return
+            if region_key not in self.tasks:
+                self.order.append(region_key)
+            self.tasks[region_key] = img
+            self.condition.notify()
+            
+    def get(self, timeout=1.0):
+        with self.lock:
+            while not self.order and not self.stopped:
+                if not self.condition.wait(timeout=timeout):
+                    return None, None
+            if self.stopped:
+                return None, None
+            region_key = self.order.pop(0)
+            img = self.tasks.pop(region_key)
+            return region_key, img
+            
+    def empty(self):
+        with self.lock:
+            return len(self.order) == 0
+
+    def stop(self):
+        with self.lock:
+            self.stopped = True
+            self.condition.notify_all()
+
+def detection_worker_loop(queue, state, analyzer, stop_event):
+    while not stop_event.is_set():
+        region_key, img = queue.get(timeout=0.5)
+        if region_key is None:
+            continue
+            
+        try:
+            if region_key == "bidding":
+                bids = analyzer.extract_bids(img)
+                state.update_bids(bids)
+            elif region_key == "hand":
+                hand = analyzer.extract_hand_cards(img)
+                valid_hand = [c for c in hand if c.get("rank") is not None and c.get("suit") is not None]
+                state.update_hand(hand, valid_hand)
+            elif region_key == "trick":
+                trick_cards = analyzer.extract_multiple_cards(img)
+                state.update_trick(trick_cards)
+            elif region_key == "ui":
+                dummy_hands = detect_dummy_hands(img, analyzer)
+                state.update_dummies(dummy_hands)
+            elif region_key == "hint":
+                hint_text = analyzer.extract_bidding_hint(img)
+                state.update_hint(hint_text)
+        except Exception as e:
+            print(f"\n⚠️ Worker thread error processing {region_key}: {e}", flush=True)
 
 def run_calibration():
     """Runs the calibration script."""
@@ -821,10 +927,14 @@ def run_bid_explanation(verbose=False):
 
 def run_monitoring(interval=2.0, verbose=False, save_play=False, output_dir="captured_plays"):
     """Monitors the screen for changes in bids/cards and reports them."""
-    print(f"👁️ Starting bridge play UI monitor (polling every {interval}s)...")
+    print(f"👁️ Starting bridge play UI monitor (non-blocking, polling every 0.1s)...")
     print("Press Ctrl+C to stop.")
     
     tracker = GameTracker() if save_play else None
+    
+    state = GameState()
+    queue = DetectionTaskQueue()
+    stop_event = threading.Event()
     
     try:
         cap = ScreenCapture()
@@ -832,18 +942,39 @@ def run_monitoring(interval=2.0, verbose=False, save_play=False, output_dir="cap
         ctrl = BridgeController()
         delta = RegionDeltaDetector()
         
+        worker = threading.Thread(target=detection_worker_loop, args=(queue, state, analyzer, stop_event))
+        worker.daemon = True
+        worker.start()
+        
         last_bids = []
-        bids = []
-        detected_trick = []
-        valid_hand = []
         
         while True:
+            # 1. Main Thread captures and delta checks
             bidding_img = cap.capture_bidding()
             if delta.region_changed("bidding", bidding_img):
-                bids = analyzer.extract_bids(bidding_img)
+                queue.put("bidding", bidding_img)
+            
+            trick_img = cap.capture_trick()
+            if delta.region_changed("trick", trick_img):
+                queue.put("trick", trick_img)
+                
+            if save_play:
+                hand_img = cap.capture_player_hand()
+                if delta.region_changed("hand", hand_img):
+                    queue.put("hand", hand_img)
+                    
+            # 2. Get latest state snapshot
+            snapshot = state.get_snapshot()
+            bids = snapshot["bids"]
+            detected_trick = snapshot["trick_cards"]
+            valid_hand = snapshot["valid_hand"]
+            dummy_hands = snapshot["dummy_hands"]
             
             if save_play:
                 tracker.update_bids(bids)
+                if trick_img is not None:
+                    tracker.register_trick_state(detected_trick, trick_img.shape[1], trick_img.shape[0])
+                tracker.set_initial_hand(valid_hand)
             
             if bids != last_bids:
                 print(f"\n📢 Bids changed! {time.strftime('%H:%M:%S')}", flush=True)
@@ -852,13 +983,6 @@ def run_monitoring(interval=2.0, verbose=False, save_play=False, output_dir="cap
                 print(f"Previous: {prev_str}", flush=True)
                 print(f"Current : {curr_str}", flush=True)
                 last_bids = bids
-                
-            trick_img = cap.capture_trick()
-            if delta.region_changed("trick", trick_img):
-                detected_trick = analyzer.extract_multiple_cards(trick_img)
-                
-            if save_play and trick_img is not None:
-                tracker.register_trick_state(detected_trick, trick_img.shape[1], trick_img.shape[0])
                 
             trick_str = ", ".join([f"{c['rank'] or '?'}{c['suit'] or '?'}" for c in detected_trick]) if detected_trick else "None"
             
@@ -878,10 +1002,9 @@ def run_monitoring(interval=2.0, verbose=False, save_play=False, output_dir="cap
             
             if is_play_stage:
                 ui_img = cap.capture_ui()
-                dummy_hands = detect_dummy_hands(ui_img, analyzer)
-            else:
-                dummy_hands = {"West": [], "North": [], "East": []}
-                
+                if delta.region_changed("ui", ui_img):
+                    queue.put("ui", ui_img)
+            
             dummy_parts = []
             for side in ["West", "North", "East"]:
                 d_hand_str = format_compact_hand(dummy_hands[side])
@@ -891,23 +1014,16 @@ def run_monitoring(interval=2.0, verbose=False, save_play=False, output_dir="cap
             
             sys.stdout.write(f"\rTrick: [{trick_str}] | Dummies: [{dummy_str}]   ")
             sys.stdout.flush()
-                
+            
             if save_play:
-                hand_img = cap.capture_player_hand()
-                if delta.region_changed("hand", hand_img):
-                    hand = analyzer.extract_hand_cards(hand_img)
-                    valid_hand = [c for c in hand if c.get("rank") is not None and c.get("suit") is not None]
-                    
-                tracker.set_initial_hand(valid_hand)
-                
                 if tracker.initial_hand and not valid_hand:
                     pbn_path, json_path = tracker.save_to_files(output_dir)
                     if pbn_path:
                         print(f"\n💾 Play saved successfully:\n   - {pbn_path}\n   - {json_path}", flush=True)
                     tracker = GameTracker()
                     delta.reset()
-                
-            time.sleep(interval)
+                    
+            time.sleep(0.1)
             
     except KeyboardInterrupt:
         print("\nMonitoring stopped by user.")
@@ -920,6 +1036,9 @@ def run_monitoring(interval=2.0, verbose=False, save_play=False, output_dir="cap
         print("Please run calibration first: python main.py --calibrate")
     except Exception as e:
         print(f"❌ Monitoring encountered an error: {e}")
+    finally:
+        stop_event.set()
+        queue.stop()
 
 def format_compact_hand(hand):
     """Formats a list of cards into a standard bridge compact hand representation."""
@@ -1023,11 +1142,15 @@ def format_bidding_table(direction_bids):
 def run_decision_loop(interval=2.0, dry_run=False, verbose=False, once=False, save_play=False, output_dir="captured_plays", action=False):
     """Runs the capture -> analyze -> decide -> execute loop continuously or once."""
     mode = "single pass" if once else "continuous"
-    print(f"🤖 Starting Bridge Play Decision Engine ({mode}, polling every {interval}s, dry_run={dry_run}, action={action})...")
+    print(f"🤖 Starting Bridge Play Decision Engine ({mode}, polling every 0.1s, dry_run={dry_run}, action={action})...")
     if not once:
         print("Press Ctrl+C to stop.")
     
     tracker = GameTracker() if save_play else None
+    
+    state = GameState()
+    queue = DetectionTaskQueue()
+    stop_event = threading.Event()
     
     try:
         from strategy import decide_bid, decide_play_card
@@ -1035,6 +1158,10 @@ def run_decision_loop(interval=2.0, dry_run=False, verbose=False, once=False, sa
         analyzer = BridgeAnalyzer(verbose=verbose)
         ctrl = BridgeController(dry_run=dry_run, action=action)
         delta = RegionDeltaDetector()
+        
+        worker = threading.Thread(target=detection_worker_loop, args=(queue, state, analyzer, stop_event))
+        worker.daemon = True
+        worker.start()
         
         last_bids = []
         last_trick_cards = []
@@ -1044,38 +1171,46 @@ def run_decision_loop(interval=2.0, dry_run=False, verbose=False, once=False, sa
         COOLDOWN = 4.0
         last_hinted_state = None
         
-        bids = []
-        hand = []
-        valid_hand = []
-        trick_cards = []
         current_stage = None
+        last_printed_state_str = None
+        last_print_time = 0
+        
+        # In single pass (once) mode, we want to run until the initial screen analysis is done.
+        # So we queue the captures and wait for the queue to be empty before doing the logic.
+        first_scan_queued = False
         
         while True:
             current_time = time.time()
             
+            # 1. Main Thread captures and delta checks
             bidding_img = cap.capture_bidding()
             if delta.region_changed("bidding", bidding_img):
-                bids = analyzer.extract_bids(bidding_img)
+                queue.put("bidding", bidding_img)
                 
-            if save_play:
-                tracker.update_bids(bids)
-            
             hand_img = cap.capture_player_hand()
             import os; os.makedirs("debug", exist_ok=True)
             cv2.imwrite("debug/player_hand_area.png", hand_img)
             if delta.region_changed("hand", hand_img):
-                hand = analyzer.extract_hand_cards(hand_img)
-                valid_hand = [c for c in hand if c.get("rank") is not None and c.get("suit") is not None]
+                queue.put("hand", hand_img)
                 
-            if save_play:
-                tracker.set_initial_hand(valid_hand)
-            
             trick_img = cap.capture_trick()
             if delta.region_changed("trick", trick_img):
-                trick_cards = analyzer.extract_multiple_cards(trick_img)
+                queue.put("trick", trick_img)
                 
-            if save_play and trick_img is not None:
-                tracker.register_trick_state(trick_cards, trick_img.shape[1], trick_img.shape[0])
+            # Get snapshot of latest asynchronous detections
+            snapshot = state.get_snapshot()
+            bids = snapshot["bids"]
+            hand = snapshot["hand"]
+            valid_hand = snapshot["valid_hand"]
+            trick_cards = snapshot["trick_cards"]
+            dummy_hands = snapshot["dummy_hands"]
+            hint_text = snapshot["hint_text"]
+            
+            if save_play:
+                tracker.update_bids(bids)
+                tracker.set_initial_hand(valid_hand)
+                if trick_img is not None:
+                    tracker.register_trick_state(trick_cards, trick_img.shape[1], trick_img.shape[0])
             
             has_trick_cards = len(trick_cards) > 0
             flat_bids = [b[1] for b in bids]
@@ -1088,7 +1223,7 @@ def run_decision_loop(interval=2.0, dry_run=False, verbose=False, once=False, sa
                     else:
                         break
                 bidding_ended = (consecutive_passes >= 3) or len(flat_bids) >= 40
-            
+                
             is_bidding_active = not bidding_ended and not has_trick_cards and (len(hand) >= 13)
             
             detected_stage = "Bidding" if is_bidding_active else "Play"
@@ -1096,20 +1231,51 @@ def run_decision_loop(interval=2.0, dry_run=False, verbose=False, once=False, sa
                 print(f"\n🔄 [Stage transition: {detected_stage}]", flush=True)
                 current_stage = detected_stage
                 
-            # Output detection summary for this loop iteration
-            flat_bids = [b[1] for b in bids]
+            if detected_stage == "Play":
+                ui_img = cap.capture_ui()
+                if delta.region_changed("ui", ui_img):
+                    queue.put("ui", ui_img)
+            
+            if is_bidding_active:
+                hint_img = cap.capture_bidding_hint()
+                if delta.region_changed("hint", hint_img):
+                    queue.put("hint", hint_img)
+                    
+            # Handle once mode logic: queue once, wait for processing, then decide/execute
+            if once and not first_scan_queued:
+                first_scan_queued = True
+                # Wait for worker thread to process initial captures
+                time.sleep(0.2)
+                while not queue.empty():
+                    time.sleep(0.05)
+                # Re-get the processed snapshot
+                snapshot = state.get_snapshot()
+                bids = snapshot["bids"]
+                hand = snapshot["hand"]
+                valid_hand = snapshot["valid_hand"]
+                trick_cards = snapshot["trick_cards"]
+                dummy_hands = snapshot["dummy_hands"]
+                hint_text = snapshot["hint_text"]
+                has_trick_cards = len(trick_cards) > 0
+                flat_bids = [b[1] for b in bids]
+                bidding_ended = False
+                if flat_bids:
+                    consecutive_passes = 0
+                    for b in reversed(flat_bids):
+                        if b == "PASS":
+                            consecutive_passes += 1
+                        else:
+                            break
+                    bidding_ended = (consecutive_passes >= 3) or len(flat_bids) >= 40
+                is_bidding_active = not bidding_ended and not has_trick_cards and (len(hand) >= 13)
+                detected_stage = "Bidding" if is_bidding_active else "Play"
+            
+            # Print state summary without console spam (on change or every 2.0s)
             bids_str = format_compact_bids(flat_bids)
             hand_str = format_compact_hand(valid_hand)
             suit_symbols = {"spade": "♠", "heart": "♥", "diamond": "♦", "club": "♣"}
             trick_str = " ".join([f"{c['rank']}{suit_symbols.get(c['suit'], '')}" for c in trick_cards])
             
-            if detected_stage == "Play":
-                ui_img = cap.capture_ui()
-                if delta.region_changed("ui", ui_img):
-                    dummy_hands = detect_dummy_hands(ui_img, analyzer)
-            else:
-                dummy_hands = {"West": [], "North": [], "East": []}
-                
             dummy_parts = []
             for side in ["West", "North", "East"]:
                 d_hand_str = format_compact_hand(dummy_hands[side])
@@ -1117,15 +1283,14 @@ def run_decision_loop(interval=2.0, dry_run=False, verbose=False, once=False, sa
                     dummy_parts.append(f"{side}={d_hand_str}")
             dummy_str = " | ".join(dummy_parts) if dummy_parts else "None"
             
-            print(f"📸 Scan: Stage={detected_stage} | Bids=[{bids_str}] | Hand=[{hand_str}] | Trick=[{trick_str}] | Dummies=[{dummy_str}]", flush=True)
-
-            if is_bidding_active:
-                hint_img = cap.capture_bidding_hint()
-                if delta.region_changed("hint", hint_img):
-                    hint_text = analyzer.extract_bidding_hint(hint_img)
-                    if hint_text:
-                        print(f"💡 Hint: {hint_text}", flush=True)
-
+            current_state_str = f"stage={detected_stage}|bids={bids_str}|hand={hand_str}|trick={trick_str}|dummies={dummy_str}"
+            if current_state_str != last_printed_state_str or current_time - last_print_time >= 2.0:
+                print(f"📸 Scan: Stage={detected_stage} | Bids=[{bids_str}] | Hand=[{hand_str}] | Trick=[{trick_str}] | Dummies=[{dummy_str}]", flush=True)
+                if hint_text:
+                    print(f"💡 Hint: {hint_text}", flush=True)
+                last_printed_state_str = current_state_str
+                last_print_time = current_time
+                
             if not valid_hand:
                 if current_stage != "Waiting":
                     print("⏳ Board inactive or hand empty. Waiting...", flush=True)
@@ -1140,12 +1305,11 @@ def run_decision_loop(interval=2.0, dry_run=False, verbose=False, once=False, sa
                 if once:
                     print("\nSingle-pass mode complete (no active hand detected).", flush=True)
                     break
-                time.sleep(interval)
+                time.sleep(0.1)
                 continue
                 
             if is_bidding_active:
                 # --- BIDDING STATE ---
-                
                 if bids != last_bids:
                     last_bids = bids
                     table_str = format_bidding_table(bids)
@@ -1182,6 +1346,7 @@ def run_decision_loop(interval=2.0, dry_run=False, verbose=False, once=False, sa
                                     print(f"🖱️ Clicked special bid '{suggested_bid}' button.")
                                     time.sleep(3.0)
                                     pyautogui.moveTo(start_x, start_y, duration=0.3, tween=pyautogui.easeInOutQuad)
+                                delta.reset()
                                 last_hinted_state = current_state
                         else:
                             # Standard suit bid, e.g., '1S', '2H', '1NT', '3NT'
@@ -1238,6 +1403,7 @@ def run_decision_loop(interval=2.0, dry_run=False, verbose=False, once=False, sa
                                         print(f"🖱️ Clicked suit '{suit}' to show hint.")
                                         time.sleep(3.0)
                                         pyautogui.moveTo(start_x, start_y, duration=0.3, tween=pyautogui.easeInOutQuad)
+                                delta.reset()
                                 last_hinted_state = current_state
             else:
                 # --- PLAY STATE ---
@@ -1277,16 +1443,13 @@ def run_decision_loop(interval=2.0, dry_run=False, verbose=False, once=False, sa
                             last_action_time = current_time
                             last_hand_len = len(valid_hand)
                             played_in_current_trick = True
-                            
-                            # Reset prev_hand_img and prev_trick_img to force immediate detection on next frames
-                            prev_hand_img = None
-                            prev_trick_img = None
+                            delta.reset()
                             
             if once:
                 print("\nSingle-pass mode complete.")
                 break
- 
-            time.sleep(interval)
+                
+            time.sleep(0.1)
             
     except KeyboardInterrupt:
         print("\nDecision Loop stopped by user.")
@@ -1299,6 +1462,9 @@ def run_decision_loop(interval=2.0, dry_run=False, verbose=False, once=False, sa
         print("Please run calibration first: python main.py --calibrate")
     except Exception as e:
         print(f"❌ Running loop failed: {e}")
+    finally:
+        stop_event.set()
+        queue.stop()
 
 def main():
     parser = argparse.ArgumentParser(
