@@ -368,15 +368,25 @@ def detect_dummy_hands(img, analyzer):
                     mask = cv2.inRange(hsv_patch, lower_red1, upper_red1) + cv2.inRange(hsv_patch, lower_red2, upper_red2)
                     is_red = (np.sum(mask > 0) / suit_patch.size) > 0.015
                 
-                # Calculate template matching scores for all 4 suits on the gray patch
+                # Calculate template matching scores for all 4 suits on the gray patch using a 5x5 alignment search
                 scores = {}
-                gray_patch = gray_crop[sy_start:sy_end, sx_start:sx_end]
+                sy_start_wide = max(0, sy - 2)
+                sy_end_wide = min(gray_crop.shape[0], sy + 15)
+                sx_start_wide = max(0, sx - 2)
+                sx_end_wide = min(gray_crop.shape[1], sx + 15)
+                gray_patch = gray_crop[sy_start_wide:sy_end_wide, sx_start_wide:sx_end_wide]
                 if gray_patch.size > 0:
-                    if gray_patch.shape[0] < 13 or gray_patch.shape[1] < 13:
-                        gray_patch = cv2.resize(gray_patch, (13, 13))
                     for suit_name, tpl in analyzer.suit_templates.items():
                         if tpl is not None:
-                            res_patch = cv2.matchTemplate(gray_patch, tpl, cv2.TM_CCOEFF_NORMED)
+                            h_p, w_p = gray_patch.shape
+                            h_t, w_t = tpl.shape
+                            if h_p < h_t or w_p < w_t:
+                                pad_y = max(0, h_t - h_p)
+                                pad_x = max(0, w_t - w_p)
+                                gp_padded = cv2.copyMakeBorder(gray_patch, 0, pad_y, 0, pad_x, cv2.BORDER_CONSTANT, value=255)
+                            else:
+                                gp_padded = gray_patch
+                            res_patch = cv2.matchTemplate(gp_padded, tpl, cv2.TM_CCOEFF_NORMED)
                             _, max_val, _, _ = cv2.minMaxLoc(res_patch)
                             scores[suit_name] = max_val
                 
