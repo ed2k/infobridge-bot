@@ -13,6 +13,7 @@ class GameTracker:
     def __init__(self):
         self.bids = []  # List of (direction, bid_str)
         self.initial_hand = []  # List of card dicts: [{"rank": "A", "suit": "spade", "bbox": {...}}, ...]
+        self.initial_dummy_hands = {"West": [], "North": [], "East": []}  # Remembered dummy hands
         self.completed_tricks = []  # List of dicts: {"N": card, "E": card, "S": card, "W": card}
         self.current_trick = {"N": None, "E": None, "S": None, "W": None}
         self.dealer = "N"  # Default dealer
@@ -31,12 +32,55 @@ class GameTracker:
                 self.dealer = bids[0][0]
 
     def set_initial_hand(self, hand):
-        """Captures the initial player hand at the start of play."""
-        if not self.initial_hand and hand:
-            # Only count cards that have rank and suit
-            valid_cards = [c for c in hand if c.get("rank") is not None and c.get("suit") is not None]
-            if len(valid_cards) >= 4:  # Reasonable threshold to ensure we see a real hand
+        """Captures or refines the initial player hand at the start of play."""
+        valid_cards = [c for c in hand if c.get("rank") is not None and c.get("suit") is not None]
+        if not valid_cards:
+            return
+            
+        played = self.get_played_cards_for_seat("S")
+        if len(played) == 0:
+            if len(valid_cards) > len(self.initial_hand):
                 self.initial_hand = valid_cards
+
+    def set_initial_dummy_hand(self, side, hand):
+        """Captures or refines the initial dummy hand for a given side at the start of play."""
+        valid_cards = [c for c in hand if c.get("rank") is not None and c.get("suit") is not None]
+        if not valid_cards:
+            return
+            
+        seat_map = {"West": "W", "North": "N", "East": "E"}
+        seat = seat_map.get(side)
+        if not seat:
+            return
+            
+        played = self.get_played_cards_for_seat(seat)
+        if len(played) == 0:
+            if len(valid_cards) > len(self.initial_dummy_hands[side]):
+                self.initial_dummy_hands[side] = valid_cards
+
+    def get_played_cards_for_seat(self, seat):
+        """Returns the list of PBN card notations played by a given seat in this game."""
+        played = []
+        for trick in self.completed_tricks:
+            card = trick.get(seat)
+            if card:
+                played.append(card)
+        card = self.current_trick.get(seat)
+        if card:
+            played.append(card)
+        return played
+
+    def get_all_played_cards(self):
+        """Returns the set of all PBN card notations played by all seats in this game."""
+        played = set()
+        for trick in self.completed_tricks:
+            for card in trick.values():
+                if card:
+                    played.add(card)
+        for card in self.current_trick.values():
+            if card:
+                played.add(card)
+        return played
 
     def register_trick_state(self, trick_cards, trick_width=400, trick_height=300):
         """

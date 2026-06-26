@@ -122,6 +122,10 @@ class GameState:
         self.trick_cards = []
         self.dummy_hands = {"West": [], "North": [], "East": []}
         self.hint_text = None
+        # Remembered card tracking state
+        self.initial_hand = []
+        self.initial_dummy_hands = {"West": [], "North": [], "East": []}
+        self.played_cards = set()
         
     def update_bids(self, bids):
         with self.lock:
@@ -144,6 +148,20 @@ class GameState:
         with self.lock:
             self.hint_text = hint_text
             
+    def update_remembered_state(self, initial_hand, initial_dummy_hands, played_cards):
+        with self.lock:
+            self.initial_hand = list(initial_hand)
+            self.initial_dummy_hands = {k: list(v) for k, v in initial_dummy_hands.items()}
+            self.played_cards = set(played_cards)
+            
+    def get_remembered_state(self):
+        with self.lock:
+            return {
+                "initial_hand": list(self.initial_hand),
+                "initial_dummy_hands": {k: list(v) for k, v in self.initial_dummy_hands.items()},
+                "played_cards": set(self.played_cards)
+            }
+            
     def get_snapshot(self):
         with self.lock:
             return {
@@ -154,6 +172,18 @@ class GameState:
                 "dummy_hands": {k: list(v) for k, v in self.dummy_hands.items()},
                 "hint_text": self.hint_text
             }
+            
+    def reset(self):
+        with self.lock:
+            self.bids = []
+            self.hand = []
+            self.valid_hand = []
+            self.trick_cards = []
+            self.dummy_hands = {"West": [], "North": [], "East": []}
+            self.hint_text = None
+            self.initial_hand = []
+            self.initial_dummy_hands = {"West": [], "North": [], "East": []}
+            self.played_cards = set()
 
 class DetectionTaskQueue:
     def __init__(self):
@@ -191,6 +221,11 @@ class DetectionTaskQueue:
         with self.lock:
             self.stopped = True
             self.condition.notify_all()
+            
+    def clear(self):
+        with self.lock:
+            self.tasks.clear()
+            self.order.clear()
 
 def detection_worker_loop(queue, state, analyzer, stop_event):
     while not stop_event.is_set():
@@ -203,14 +238,25 @@ def detection_worker_loop(queue, state, analyzer, stop_event):
                 bids = analyzer.extract_bids(img)
                 state.update_bids(bids)
             elif region_key == "hand":
-                hand = analyzer.extract_hand_cards(img)
+                rem = state.get_remembered_state()
+                hand = analyzer.extract_hand_cards(
+                    img, 
+                    initial_hand=rem["initial_hand"], 
+                    played_cards=rem["played_cards"]
+                )
                 valid_hand = [c for c in hand if c.get("rank") is not None and c.get("suit") is not None]
                 state.update_hand(hand, valid_hand)
             elif region_key == "trick":
                 trick_cards = analyzer.extract_multiple_cards(img)
                 state.update_trick(trick_cards)
             elif region_key == "ui":
-                dummy_hands = detect_dummy_hands(img, analyzer)
+                rem = state.get_remembered_state()
+                dummy_hands = detect_dummy_hands(
+                    img, 
+                    analyzer, 
+                    initial_dummy_hands=rem["initial_dummy_hands"], 
+                    played_cards=rem["played_cards"]
+                )
                 state.update_dummies(dummy_hands)
             elif region_key == "hint":
                 hint_text = analyzer.extract_bidding_hint(img)
@@ -289,7 +335,7 @@ def _nms_boxes(boxes, threshold=0.3):
         
     return pick
 
-def detect_dummy_hands(img, analyzer):
+def detect_dummy_hands(img, analyzer, initial_dummy_hands=None, played_cards=None):
     """
     Detects dummy hands on all sides (West, East, North) in the full UI capture image.
     North dummy uses the same card detection as player hand (same card layout).
@@ -301,32 +347,33 @@ def detect_dummy_hands(img, analyzer):
     h_img, w_img = img.shape[:2]
     detected_cards = []
     
+    # Calculate remaining cards based on remembered initial dummy hands and played cards
+    remaining_dummy = {"West": [], "North": [], "East": []}
+    played_set = played_cards if played_cards is not None else set()
+    
+    for side in ["West", "North", "East"]:
+        initial = initial_dummy_hands.get(side) if initial_dummy_hands else []
+        if initial:
+            for card in initial:
+                pbn = analyzer.to_pbn_card(card["rank"], card["suit"])
+                if pbn not in played_set:
+                    remaining_dummy[side].append(card)
+
     # 1. North dummy: Same layout as player hand (one row of cards)
     # The dummy card strip is at y=240..340 in the UI
-    if h_img >= 340:
-        # Crop the center section where North dummy cards reside to avoid sidebar noise
-        if w_img > 600:
+    if remaining_dummy["North"]:
+        if h_img >= 340 and w_img > 600:
             left_x = w_img // 2 - 250
             right_x = w_img // 2 + 250
             dummy_strip = img[240:340, left_x:right_x]
             offset_x = left_x
-        else:
-            dummy_strip = img[240:340, 0:w_img]
-            offset_x = 0
-            
-        try:
-            import os
-            os.makedirs("debug", exist_ok=True)
-            cv2.imwrite("debug/dummy_strip_north.png", dummy_strip)
-            
-            # Strict white pixel ratio check to filter out card backs or empty background
-            hsv_dummy = cv2.cvtColor(dummy_strip, cv2.COLOR_BGR2HSV)
-            white_pixels = np.sum((hsv_dummy[:,:,1] < 30) & (hsv_dummy[:,:,2] > 200))
-            white_ratio = white_pixels / (dummy_strip.shape[0] * dummy_strip.shape[1])
-            
-            if white_ratio >= 0.15:
-                north_cards = analyzer.extract_hand_cards(dummy_strip)
-                # Adjust coordinates to full image
+            try:
+                # Use fast-path for North by passing initial/played to extract_hand_cards
+                north_cards = analyzer.extract_hand_cards(
+                    dummy_strip, 
+                    initial_hand=initial_dummy_hands["North"], 
+                    played_cards=played_cards
+                )
                 for card in north_cards:
                     if card.get("rank") and card.get("suit"):
                         bbox = card.get("bbox", {})
@@ -343,10 +390,64 @@ def detect_dummy_hands(img, analyzer):
                                 "h": bbox.get("h", 0)
                             }
                         })
-        except Exception:
-            pass
-            
+            except Exception:
+                pass
+    else:
+        # Normal detection path for North dummy
+        if h_img >= 340:
+            if w_img > 600:
+                left_x = w_img // 2 - 250
+                right_x = w_img // 2 + 250
+                dummy_strip = img[240:340, left_x:right_x]
+                offset_x = left_x
+            else:
+                dummy_strip = img[240:340, 0:w_img]
+                offset_x = 0
+                
+            try:
+                import os
+                os.makedirs("debug", exist_ok=True)
+                cv2.imwrite("debug/dummy_strip_north.png", dummy_strip)
+                
+                hsv_dummy = cv2.cvtColor(dummy_strip, cv2.COLOR_BGR2HSV)
+                white_pixels = np.sum((hsv_dummy[:,:,1] < 30) & (hsv_dummy[:,:,2] > 200))
+                white_ratio = white_pixels / (dummy_strip.shape[0] * dummy_strip.shape[1])
+                
+                if white_ratio >= 0.15:
+                    north_cards = analyzer.extract_hand_cards(dummy_strip)
+                    for card in north_cards:
+                        if card.get("rank") and card.get("suit"):
+                            bbox = card.get("bbox", {})
+                            detected_cards.append({
+                                "rank": card["rank"],
+                                "suit": card["suit"],
+                                "cx": offset_x + bbox.get("x", 0) + bbox.get("w", 0) // 2,
+                                "cy": 240 + bbox.get("y", 0) + bbox.get("h", 0) // 2,
+                                "side": "North",
+                                "bbox": {
+                                    "x": bbox.get("x", 0),
+                                    "y": bbox.get("y", 0) + 240,
+                                    "w": bbox.get("w", 0),
+                                    "h": bbox.get("h", 0)
+                                }
+                            })
+            except Exception:
+                pass
+
     # 2. East/West dummy: Template Matching
+    # Populate detected_cards directly for sides where we already have remembered cards
+    for side in ["West", "East"]:
+        if remaining_dummy[side]:
+            for card in remaining_dummy[side]:
+                detected_cards.append({
+                    "rank": card["rank"],
+                    "suit": card["suit"],
+                    "cx": card.get("cx", 0),
+                    "cy": card.get("cy", 0),
+                    "side": side,
+                    "bbox": card.get("bbox", {"x": 0, "y": 0, "w": 0, "h": 0})
+                })
+
     if not hasattr(analyzer, 'rank_templates'):
         analyzer.rank_templates = {}
         ranks = ["A", "K", "Q", "J", "T", "9", "8", "7", "6", "5", "4", "3", "2"]
@@ -361,11 +462,11 @@ def detect_dummy_hands(img, analyzer):
 
     crops = []
     if h_img >= 600:
-        if w_img >= 110:
+        if w_img >= 110 and not remaining_dummy["West"]:
             west_crop = img[320:min(620, h_img), 0:110]
             crops.append(("West", west_crop, 0, 320))
             cv2.imwrite("debug/dummy_strip_west.png", west_crop)
-        if w_img >= 380:
+        if w_img >= 380 and not remaining_dummy["East"]:
             east_crop = img[320:min(620, h_img), 380:w_img]
             crops.append(("East", east_crop, 380, 320))
             cv2.imwrite("debug/dummy_strip_east.png", east_crop)
@@ -930,7 +1031,7 @@ def run_monitoring(interval=2.0, verbose=False, save_play=False, output_dir="cap
     print(f"👁️ Starting bridge play UI monitor (non-blocking, polling every 0.1s)...")
     print("Press Ctrl+C to stop.")
     
-    tracker = GameTracker() if save_play else None
+    tracker = GameTracker()
     
     state = GameState()
     queue = DetectionTaskQueue()
@@ -958,10 +1059,10 @@ def run_monitoring(interval=2.0, verbose=False, save_play=False, output_dir="cap
             if delta.region_changed("trick", trick_img):
                 queue.put("trick", trick_img)
                 
-            if save_play:
-                hand_img = cap.capture_player_hand()
-                if delta.region_changed("hand", hand_img):
-                    queue.put("hand", hand_img)
+            # Always capture player hand for tracking remaining cards
+            hand_img = cap.capture_player_hand()
+            if delta.region_changed("hand", hand_img):
+                queue.put("hand", hand_img)
                     
             # 2. Get latest state snapshot
             snapshot = state.get_snapshot()
@@ -970,11 +1071,37 @@ def run_monitoring(interval=2.0, verbose=False, save_play=False, output_dir="cap
             valid_hand = snapshot["valid_hand"]
             dummy_hands = snapshot["dummy_hands"]
             
-            if save_play:
-                tracker.update_bids(bids)
-                if trick_img is not None:
-                    tracker.register_trick_state(detected_trick, trick_img.shape[1], trick_img.shape[0])
-                tracker.set_initial_hand(valid_hand)
+            # Check for new game transition (e.g. hand size back to 13 while we had played cards)
+            played_count = len(tracker.get_all_played_cards())
+            if len(valid_hand) == 13 and played_count > 0:
+                print("\n✨ New game detected (full hand restored). Resetting state...", flush=True)
+                tracker = GameTracker()
+                state.reset()
+                queue.clear()
+                delta.reset()
+                last_bids = []
+                # Re-fetch snapshot post-reset to clear local variables
+                snapshot = state.get_snapshot()
+                bids = snapshot["bids"]
+                detected_trick = snapshot["trick_cards"]
+                valid_hand = snapshot["valid_hand"]
+                dummy_hands = snapshot["dummy_hands"]
+            
+            # Always update GameTracker
+            tracker.update_bids(bids)
+            if trick_img is not None:
+                tracker.register_trick_state(detected_trick, trick_img.shape[1], trick_img.shape[0])
+            tracker.set_initial_hand(valid_hand)
+            for side in ["West", "North", "East"]:
+                if dummy_hands[side]:
+                    tracker.set_initial_dummy_hand(side, dummy_hands[side])
+            
+            # Sync the tracked remembered state to GameState
+            state.update_remembered_state(
+                tracker.initial_hand,
+                tracker.initial_dummy_hands,
+                tracker.get_all_played_cards()
+            )
             
             if bids != last_bids:
                 print(f"\n📢 Bids changed! {time.strftime('%H:%M:%S')}", flush=True)
@@ -1015,13 +1142,16 @@ def run_monitoring(interval=2.0, verbose=False, save_play=False, output_dir="cap
             sys.stdout.write(f"\rTrick: [{trick_str}] | Dummies: [{dummy_str}]   ")
             sys.stdout.flush()
             
-            if save_play:
-                if tracker.initial_hand and not valid_hand:
+            # Always reset tracker when game ends
+            if tracker.initial_hand and not valid_hand:
+                if save_play:
                     pbn_path, json_path = tracker.save_to_files(output_dir)
                     if pbn_path:
                         print(f"\n💾 Play saved successfully:\n   - {pbn_path}\n   - {json_path}", flush=True)
-                    tracker = GameTracker()
-                    delta.reset()
+                tracker = GameTracker()
+                state.reset()
+                queue.clear()
+                delta.reset()
                     
             time.sleep(0.1)
             
@@ -1146,7 +1276,7 @@ def run_decision_loop(interval=2.0, dry_run=False, verbose=False, once=False, sa
     if not once:
         print("Press Ctrl+C to stop.")
     
-    tracker = GameTracker() if save_play else None
+    tracker = GameTracker()
     
     state = GameState()
     queue = DetectionTaskQueue()
@@ -1206,11 +1336,43 @@ def run_decision_loop(interval=2.0, dry_run=False, verbose=False, once=False, sa
             dummy_hands = snapshot["dummy_hands"]
             hint_text = snapshot["hint_text"]
             
-            if save_play:
-                tracker.update_bids(bids)
-                tracker.set_initial_hand(valid_hand)
-                if trick_img is not None:
-                    tracker.register_trick_state(trick_cards, trick_img.shape[1], trick_img.shape[0])
+            # Check for new game transition (e.g. hand size back to 13 while we had played cards)
+            played_count = len(tracker.get_all_played_cards())
+            if len(valid_hand) == 13 and played_count > 0:
+                print("\n✨ New game detected (full hand restored). Resetting state...", flush=True)
+                tracker = GameTracker()
+                state.reset()
+                queue.clear()
+                delta.reset()
+                last_bids = []
+                last_trick_cards = []
+                played_in_current_trick = False
+                last_hand_len = 0
+                last_printed_state_str = None
+                # Re-fetch snapshot post-reset to clear local variables
+                snapshot = state.get_snapshot()
+                bids = snapshot["bids"]
+                hand = snapshot["hand"]
+                valid_hand = snapshot["valid_hand"]
+                trick_cards = snapshot["trick_cards"]
+                dummy_hands = snapshot["dummy_hands"]
+                hint_text = snapshot["hint_text"]
+            
+            # Always update GameTracker
+            tracker.update_bids(bids)
+            tracker.set_initial_hand(valid_hand)
+            if trick_img is not None:
+                tracker.register_trick_state(trick_cards, trick_img.shape[1], trick_img.shape[0])
+            for side in ["West", "North", "East"]:
+                if dummy_hands[side]:
+                    tracker.set_initial_dummy_hand(side, dummy_hands[side])
+            
+            # Sync the tracked remembered state to GameState
+            state.update_remembered_state(
+                tracker.initial_hand,
+                tracker.initial_dummy_hands,
+                tracker.get_all_played_cards()
+            )
             
             has_trick_cards = len(trick_cards) > 0
             flat_bids = [b[1] for b in bids]
@@ -1295,11 +1457,14 @@ def run_decision_loop(interval=2.0, dry_run=False, verbose=False, once=False, sa
                 if current_stage != "Waiting":
                     print("⏳ Board inactive or hand empty. Waiting...", flush=True)
                     current_stage = "Waiting"
-                if save_play and tracker.initial_hand:
-                    pbn_path, json_path = tracker.save_to_files(output_dir)
-                    if pbn_path:
-                        print(f"\n💾 Play saved successfully:\n   - {pbn_path}\n   - {json_path}", flush=True)
+                if tracker.initial_hand:
+                    if save_play:
+                        pbn_path, json_path = tracker.save_to_files(output_dir)
+                        if pbn_path:
+                            print(f"\n💾 Play saved successfully:\n   - {pbn_path}\n   - {json_path}", flush=True)
                     tracker = GameTracker()
+                    state.reset()
+                    queue.clear()
                 delta.reset()
                 last_hinted_state = None
                 if once:

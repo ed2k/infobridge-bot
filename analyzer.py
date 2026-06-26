@@ -614,7 +614,7 @@ class BridgeAnalyzer:
             else:
                 return "club"
 
-    def classify_suit_template_matching(self, suit_img):
+    def classify_suit_template_matching(self, suit_img, is_hand=True):
         """
         Classify suit using cv2.matchTemplate against loaded templates.
         Pre-filters candidate templates using color (red vs black) to eliminate cross-color errors.
@@ -642,6 +642,7 @@ class BridgeAnalyzer:
         gray = cv2.cvtColor(suit_img, cv2.COLOR_BGR2GRAY)
         best_match = None
         best_score = -1.0
+        scores = {}
         
         for suit in allowed_suits:
             template = self.suit_templates.get(suit)
@@ -659,9 +660,48 @@ class BridgeAnalyzer:
                 
             res = cv2.matchTemplate(gray_search, template, cv2.TM_CCOEFF_NORMED)
             _, max_val, _, _ = cv2.minMaxLoc(res)
+            scores[suit] = max_val
             if max_val > best_score:
                 best_score = max_val
                 best_match = suit
+                
+        # Tie-breaker for Spades vs Clubs in trick area (is_hand=False)
+        if not is_hand and not is_red and "spade" in scores and "club" in scores:
+            diff = abs(scores["spade"] - scores["club"])
+            if diff < 0.03:
+                # Binarize suit crop using OTSU thresholding
+                _, binary_suit = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV | cv2.THRESH_OTSU)
+                
+                # Check border to see if it needs inversion
+                border_mean = (np.mean(binary_suit[0, :]) + np.mean(binary_suit[-1, :]) + 
+                               np.mean(binary_suit[:, 0]) + np.mean(binary_suit[:, -1])) / 4
+                if border_mean > 127:
+                    binary_suit = cv2.bitwise_not(binary_suit)
+                
+                binary_scores = {}
+                for suit in ["spade", "club"]:
+                    tpl = self.suit_templates.get(suit)
+                    if tpl is None:
+                        continue
+                    _, binary_tpl = cv2.threshold(tpl, 127, 255, cv2.THRESH_BINARY_INV)
+                    
+                    t_h, t_w = binary_tpl.shape[:2]
+                    g_h, g_w = binary_suit.shape[:2]
+                    if g_h < t_h or g_w < t_w:
+                        binary_search = cv2.resize(binary_suit, (max(g_w, t_w), max(g_h, t_h)))
+                    else:
+                        binary_search = binary_suit
+                        
+                    res = cv2.matchTemplate(binary_search, binary_tpl, cv2.TM_CCOEFF_NORMED)
+                    _, max_val, _, _ = cv2.minMaxLoc(res)
+                    binary_scores[suit] = max_val
+                
+                best_binary_match = max(binary_scores, key=binary_scores.get)
+                if best_binary_match != best_match:
+                    if self.verbose:
+                        print(f"Debug Match Tie-breaker: overriding {best_match} -> {best_binary_match} (diff={diff:.4f}, binary_scores={binary_scores})")
+                    best_match = best_binary_match
+                    best_score = binary_scores[best_binary_match]
             
         if self.verbose:
             print(f"Debug Match: {best_match} (score: {best_score:.3f}, is_red: {is_red})")
@@ -798,33 +838,13 @@ class BridgeAnalyzer:
                 if rank_text == "9" and right_ink > left_ink * 1.5:
                     rank_text = "Q"
 
-        # Disambiguate 7 vs 5 using stroke analysis
-        if rank_text in ("7", "5"):
-            gray_rank = cv2.cvtColor(rank_crop, cv2.COLOR_BGR2GRAY) if len(rank_crop.shape) == 3 else rank_crop
-            h, w = gray_rank.shape
-            _, binary = cv2.threshold(gray_rank, 0, 255, cv2.THRESH_BINARY_INV | cv2.THRESH_OTSU)
-            # 7 has horizontal stroke at top; 5 has rounded shape with ink in middle-right
-            top_third = binary[:h//3, :]
-            mid_section = binary[h//4:3*h//4, w//4:3*w//4]
-            top_ink = np.sum(top_third > 0)
-            mid_ink = np.sum(mid_section > 0)
-            total_ink = np.sum(binary > 0)
-            if total_ink > 0:
-                top_ratio = top_ink / total_ink
-                mid_ratio = mid_ink / total_ink
-                # 7 has more ink at top (>30%), 5 has more in middle
-                if top_ratio > 0.30:
-                    rank_text = "7"
-                elif mid_ratio > 0.25:
-                    rank_text = "5"
-
         # A, 4, 6 are recognized highly reliably by Tesseract raw OCR, so no override is needed.
 
         # Extract Suit — use provided suit_img (from card's left edge) if available
         suit_crop_for_match = suit_img if suit_img is not None else suit_crop
         suit = None
         if self.suit_templates:
-            suit = self.classify_suit_template_matching(suit_crop_for_match)
+            suit = self.classify_suit_template_matching(suit_crop_for_match, is_hand=is_hand)
             # Cross-check template result against expected color from peak detection
             if suit and expected_suit_is_red is not None:
                 template_is_red = suit in ("heart", "diamond")
@@ -836,7 +856,7 @@ class BridgeAnalyzer:
             if suit_img_top is not None:
                 suit_top = suit_img_top
                 if self.suit_templates:
-                    top_suit = self.classify_suit_template_matching(suit_top)
+                    top_suit = self.classify_suit_template_matching(suit_top, is_hand=is_hand)
                     if top_suit and expected_suit_is_red is not None:
                         top_is_red = top_suit in ("heart", "diamond")
                         if top_is_red == expected_suit_is_red:
@@ -1164,7 +1184,15 @@ class BridgeAnalyzer:
             return max_val
         return -1.0
 
-    def extract_hand_cards(self, hand_img, is_east_west=False):
+    def to_pbn_card(self, rank, suit):
+        r = rank.upper()
+        if r == "10":
+            r = "T"
+        s_map = {"spade": "S", "heart": "H", "diamond": "D", "club": "C"}
+        s = s_map.get(suit.lower(), "")
+        return f"{s}{r}"
+
+    def extract_hand_cards(self, hand_img, is_east_west=False, initial_hand=None, played_cards=None):
         """
         Extracts cards from a player hand row crop.
         Finds individual cards by finding peaks in the smoothed vertical projection
@@ -1310,6 +1338,43 @@ class BridgeAnalyzer:
                     spacing_right = min(40, real_spacing)
                     
             p["spacing_right"] = spacing_right
+
+        # Check if we can use the fast-path by matching detected peaks to remembered remaining cards
+        remaining_initial = []
+        if initial_hand:
+            played_set = played_cards if played_cards is not None else set()
+            for card in initial_hand:
+                pbn = self.to_pbn_card(card["rank"], card["suit"])
+                if pbn not in played_set:
+                    remaining_initial.append(card)
+                    
+        # Fast path condition: we have a remembered remaining hand, and the peak count matches exactly
+        if remaining_initial and len(peaks) == len(remaining_initial):
+            detected_cards = []
+            for idx, card in enumerate(remaining_initial):
+                p = peaks[idx]
+                x_start = p["x_suit"] - 15
+                x_end = x_start + 40
+                x_start = max(0, min(x_start, w_strip - 1))
+                x_end = max(0, min(x_end, w_strip))
+                
+                orig_bbox = card.get("bbox", {})
+                
+                bbox = {
+                    "x": int(x_start / scale),
+                    "y": int(orig_bbox.get("y", 2)),
+                    "w": int((x_end - x_start) / scale),
+                    "h": int(orig_bbox.get("h", 56))
+                }
+                
+                detected_cards.append({
+                    "rank": card["rank"],
+                    "suit": card["suit"],
+                    "bbox": bbox
+                })
+            if self.verbose:
+                print(f"⚡ Fast Hand Detection Path: matched {len(detected_cards)} peaks to remembered remaining cards!")
+            return detected_cards
 
         detected_cards = []
         card_crops_list = []
