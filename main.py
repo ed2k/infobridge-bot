@@ -1546,8 +1546,8 @@ def run_decision_loop(interval=2.0, dry_run=False, verbose=False, once=False, sa
                     
                 suggested_bid = decide_bid(valid_hand, flat_bids, verbose=verbose)
                 
-                # Hint click automation
-                if suggested_bid:
+                # Hint click automation (only when --action is enabled)
+                if action and suggested_bid:
                     bids_count = len(flat_bids)
                     current_state = (bids_count, suggested_bid)
                     
@@ -1562,19 +1562,16 @@ def run_decision_loop(interval=2.0, dry_run=False, verbose=False, once=False, sa
                             coords = analyzer.locate_ui_text_button(ui_img, suggested_bid, ui_roi, max_y=max_y)
                             if coords:
                                 cx, cy = coords
-                                if not action:
-                                    print(f"🤖 [NO ACTION] Would move to special bid '{suggested_bid}' button at ({cx}, {cy}) and click.")
-                                else:
-                                    import pyautogui
-                                    start_x, start_y = pyautogui.position()
-                                    pyautogui.moveTo(cx, cy, duration=0.3, tween=pyautogui.easeInOutQuad)
-                                    time.sleep(0.1)
-                                    pyautogui.mouseDown()
-                                    time.sleep(0.15)
-                                    pyautogui.mouseUp()
-                                    print(f"🖱️ Clicked special bid '{suggested_bid}' button.")
-                                    time.sleep(3.0)
-                                    pyautogui.moveTo(start_x, start_y, duration=0.3, tween=pyautogui.easeInOutQuad)
+                                import pyautogui
+                                start_x, start_y = pyautogui.position()
+                                pyautogui.moveTo(cx, cy, duration=0.3, tween=pyautogui.easeInOutQuad)
+                                time.sleep(0.1)
+                                pyautogui.mouseDown()
+                                time.sleep(0.15)
+                                pyautogui.mouseUp()
+                                print(f"🖱️ Clicked special bid '{suggested_bid}' button.")
+                                time.sleep(3.0)
+                                pyautogui.moveTo(start_x, start_y, duration=0.3, tween=pyautogui.easeInOutQuad)
                                 delta.reset()
                                 last_hinted_state = current_state
                         else:
@@ -1591,18 +1588,15 @@ def run_decision_loop(interval=2.0, dry_run=False, verbose=False, once=False, sa
                             level_coords = analyzer.locate_ui_text_button(ui_img, level, ui_roi, max_y=max_y)
                             if level_coords:
                                 lx, ly = level_coords
-                                if not action:
-                                    print(f"🤖 [NO ACTION] Would move to level '{level}' button at ({lx}, {ly}) and click.")
-                                else:
-                                    import pyautogui
-                                    start_x, start_y = pyautogui.position()
-                                    pyautogui.moveTo(lx, ly, duration=0.3, tween=pyautogui.easeInOutQuad)
-                                    time.sleep(0.1)
-                                    pyautogui.mouseDown()
-                                    time.sleep(0.15)
-                                    pyautogui.mouseUp()
-                                    time.sleep(0.4)
-                                    
+                                import pyautogui
+                                start_x, start_y = pyautogui.position()
+                                pyautogui.moveTo(lx, ly, duration=0.3, tween=pyautogui.easeInOutQuad)
+                                time.sleep(0.1)
+                                pyautogui.mouseDown()
+                                time.sleep(0.15)
+                                pyautogui.mouseUp()
+                                time.sleep(0.4)
+                                
                                 # Re-capture UI to locate "NT" button
                                 ui_img = cap.capture_ui()
                                 nt_coords = analyzer.locate_ui_text_button(ui_img, "NT", ui_roi, max_y=max_y)
@@ -1621,58 +1615,56 @@ def run_decision_loop(interval=2.0, dry_run=False, verbose=False, once=False, sa
                                     offset = suit_offsets.get(suit, 0)
                                     tx, ty = nx + offset, ny
                                     
-                                    if not action:
-                                        print(f"🤖 [NO ACTION] Would move to suit '{suit}' button at ({tx}, {ty}) and click.")
-                                    else:
-                                        pyautogui.moveTo(tx, ty, duration=0.3, tween=pyautogui.easeInOutQuad)
-                                        time.sleep(0.1)
-                                        pyautogui.mouseDown()
-                                        time.sleep(0.15)
-                                        pyautogui.mouseUp()
-                                        print(f"🖱️ Clicked suit '{suit}' to show hint.")
-                                        time.sleep(3.0)
-                                        pyautogui.moveTo(start_x, start_y, duration=0.3, tween=pyautogui.easeInOutQuad)
+                                    pyautogui.moveTo(tx, ty, duration=0.3, tween=pyautogui.easeInOutQuad)
+                                    time.sleep(0.1)
+                                    pyautogui.mouseDown()
+                                    time.sleep(0.15)
+                                    pyautogui.mouseUp()
+                                    print(f"🖱️ Clicked suit '{suit}' to show hint.")
+                                    time.sleep(3.0)
+                                    pyautogui.moveTo(start_x, start_y, duration=0.3, tween=pyautogui.easeInOutQuad)
                                 delta.reset()
                                 last_hinted_state = current_state
             else:
                 # --- PLAY STATE ---
-                # If trick is cleared, reset played flag
-                if len(trick_cards) == 0:
-                    played_in_current_trick = False
-                    
-                # If trick cards changed, reset played flag in case a click was ignored
-                if trick_cards != last_trick_cards:
-                    last_trick_cards = trick_cards
-                    # If someone else played, we might be allowed to play now
-                    if played_in_current_trick and current_time - last_action_time > 1.5:
-                        # If hand size did not decrease, the click was ignored
+                if action:
+                    # If trick is cleared, reset played flag
+                    if len(trick_cards) == 0:
+                        played_in_current_trick = False
+                        
+                    # If trick cards changed, reset played flag in case a click was ignored
+                    if trick_cards != last_trick_cards:
+                        last_trick_cards = trick_cards
+                        # If someone else played, we might be allowed to play now
+                        if played_in_current_trick and current_time - last_action_time > 1.5:
+                            # If hand size did not decrease, the click was ignored
+                            if len(valid_hand) == last_hand_len:
+                                played_in_current_trick = False
+                                
+                    # If we played a card but it's been more than 5.0 seconds and hand size hasn't changed,
+                    # the click was likely ignored or missed, so reset played flag to retry.
+                    if played_in_current_trick and current_time - last_action_time > 5.0:
                         if len(valid_hand) == last_hand_len:
                             played_in_current_trick = False
+                            print("⚠️ Play timeout: Hand size did not decrease after 5.0s. Retrying...", flush=True)
+                    
+                    if not played_in_current_trick:
+                        # Decide card to play
+                        card_idx, rationale = decide_play_card(hand, trick_cards)
+                        if card_idx is not None and card_idx < len(hand):
+                            chosen_card = hand[card_idx]
                             
-                # If we played a card but it's been more than 5.0 seconds and hand size hasn't changed,
-                # the click was likely ignored or missed, so reset played flag to retry.
-                if played_in_current_trick and current_time - last_action_time > 5.0:
-                    if len(valid_hand) == last_hand_len:
-                        played_in_current_trick = False
-                        print("⚠️ Play timeout: Hand size did not decrease after 5.0s. Retrying...", flush=True)
-                
-                if not played_in_current_trick:
-                    # Decide card to play
-                    card_idx, rationale = decide_play_card(hand, trick_cards)
-                    if card_idx is not None and card_idx < len(hand):
-                        chosen_card = hand[card_idx]
-                        
-                        # Only click if cooldown passed
-                        if current_time - last_action_time > COOLDOWN:
-                            print(f"\n🧠 Decision: {rationale}")
-                            print(f"🎬 Action: Playing {chosen_card['rank']}{chosen_card['suit']}")
-                            
-                            # Execute play card action
-                            ctrl.play_card(chosen_card["bbox"])
-                            last_action_time = current_time
-                            last_hand_len = len(valid_hand)
-                            played_in_current_trick = True
-                            delta.reset()
+                            # Only click if cooldown passed
+                            if current_time - last_action_time > COOLDOWN:
+                                print(f"\n🧠 Decision: {rationale}")
+                                print(f"🎬 Action: Playing {chosen_card['rank']}{chosen_card['suit']}")
+                                
+                                # Execute play card action
+                                ctrl.play_card(chosen_card["bbox"])
+                                last_action_time = current_time
+                                last_hand_len = len(valid_hand)
+                                played_in_current_trick = True
+                                delta.reset()
                             
             if once:
                 print("\nSingle-pass mode complete.")
