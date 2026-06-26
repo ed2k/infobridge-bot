@@ -471,6 +471,10 @@ def detect_dummy_hands(img, analyzer, initial_dummy_hands=None, played_cards=Non
             crops.append(("East", east_crop, 380, 320))
             cv2.imwrite("debug/dummy_strip_east.png", east_crop)
 
+    if crops:
+        sides = [c[0] for c in crops]
+        print(f"⏳ Running slow-path dummy detection for {sides} (template matching/OCR)...", flush=True)
+
     for side, crop, offset_x, offset_y in crops:
         if crop.size == 0:
             continue
@@ -1048,6 +1052,8 @@ def run_monitoring(interval=2.0, verbose=False, save_play=False, output_dir="cap
         worker.start()
         
         last_bids = []
+        last_printed_state_str = None
+        current_stage = None
         
         while True:
             # 1. Main Thread captures and delta checks
@@ -1071,10 +1077,40 @@ def run_monitoring(interval=2.0, verbose=False, save_play=False, output_dir="cap
             valid_hand = snapshot["valid_hand"]
             dummy_hands = snapshot["dummy_hands"]
             
-            # Check for new game transition (e.g. hand size back to 13 while we had played cards)
+            # Compute stage early for stage-change and new-game checks
+            has_trick = len(detected_trick) > 0
+            flat_bids = [b[1] for b in bids]
+            bidding_ended = False
+            if flat_bids:
+                consecutive_passes = 0
+                for b in reversed(flat_bids):
+                    if b.upper() == "PASS":
+                        consecutive_passes += 1
+                    else:
+                        break
+                bidding_ended = (consecutive_passes >= 3) or len(flat_bids) >= 40
+            
+            is_play_stage = has_trick or bidding_ended
+            detected_stage = "Play" if is_play_stage else "Bidding"
+            if not valid_hand:
+                detected_stage = "Waiting"
+                
+            # Check for new game transition (e.g. hand cards count increased beyond expected remaining)
             played_count = len(tracker.get_all_played_cards())
-            if len(valid_hand) == 13 and played_count > 0:
-                print("\n✨ New game detected (full hand restored). Resetting state...", flush=True)
+            played_south = len(tracker.get_played_cards_for_seat("S"))
+            expected_remaining = len(tracker.initial_hand) - played_south
+            is_new_game_transition = (
+                (played_count > 0 and len(valid_hand) > expected_remaining) or 
+                (current_stage == "Play" and detected_stage == "Bidding")
+            )
+            
+            if is_new_game_transition:
+                print("\n✨ New game detected (transition/reset). Saving partial play and resetting state...", flush=True)
+                if tracker.initial_hand and played_count > 0:
+                    if save_play:
+                        pbn_path, json_path = tracker.save_to_files(output_dir)
+                        if pbn_path:
+                            print(f"💾 Play saved successfully:\n   - {pbn_path}\n   - {json_path}", flush=True)
                 tracker = GameTracker()
                 state.reset()
                 queue.clear()
@@ -1086,6 +1122,11 @@ def run_monitoring(interval=2.0, verbose=False, save_play=False, output_dir="cap
                 detected_trick = snapshot["trick_cards"]
                 valid_hand = snapshot["valid_hand"]
                 dummy_hands = snapshot["dummy_hands"]
+                # Recompute stage after reset
+                is_play_stage = False
+                detected_stage = "Waiting"
+                
+            current_stage = detected_stage
             
             # Always update GameTracker
             tracker.update_bids(bids)
@@ -1113,20 +1154,6 @@ def run_monitoring(interval=2.0, verbose=False, save_play=False, output_dir="cap
                 
             trick_str = ", ".join([f"{c['rank'] or '?'}{c['suit'] or '?'}" for c in detected_trick]) if detected_trick else "None"
             
-            has_trick = len(detected_trick) > 0
-            flat_bids = [b[1] for b in bids]
-            bidding_ended = False
-            if flat_bids:
-                consecutive_passes = 0
-                for b in reversed(flat_bids):
-                    if b.upper() == "PASS":
-                        consecutive_passes += 1
-                    else:
-                        break
-                bidding_ended = (consecutive_passes >= 3) or len(flat_bids) >= 40
-            
-            is_play_stage = has_trick or bidding_ended
-            
             if is_play_stage:
                 ui_img = cap.capture_ui()
                 if delta.region_changed("ui", ui_img):
@@ -1139,15 +1166,19 @@ def run_monitoring(interval=2.0, verbose=False, save_play=False, output_dir="cap
                     dummy_parts.append(f"{side}={d_hand_str}")
             dummy_str = " | ".join(dummy_parts) if dummy_parts else "None"
             
-            sys.stdout.write(f"\rTrick: [{trick_str}] | Dummies: [{dummy_str}]   ")
-            sys.stdout.flush()
+            current_state_str = f"bids={bids}|trick={trick_str}|dummies={dummy_str}"
+            if current_state_str != last_printed_state_str:
+                sys.stdout.write(f"\rTrick: [{trick_str}] | Dummies: [{dummy_str}]   ")
+                sys.stdout.flush()
+                last_printed_state_str = current_state_str
             
-            # Always reset tracker when game ends
-            if tracker.initial_hand and not valid_hand:
+            # Reset tracker when 13 tricks are completed
+            if len(tracker.completed_tricks) == 13:
+                print("\n🏆 Round complete (13 tricks played). Saving and resetting state...", flush=True)
                 if save_play:
                     pbn_path, json_path = tracker.save_to_files(output_dir)
                     if pbn_path:
-                        print(f"\n💾 Play saved successfully:\n   - {pbn_path}\n   - {json_path}", flush=True)
+                        print(f"💾 Play saved successfully:\n   - {pbn_path}\n   - {json_path}", flush=True)
                 tracker = GameTracker()
                 state.reset()
                 queue.clear()
@@ -1336,10 +1367,41 @@ def run_decision_loop(interval=2.0, dry_run=False, verbose=False, once=False, sa
             dummy_hands = snapshot["dummy_hands"]
             hint_text = snapshot["hint_text"]
             
-            # Check for new game transition (e.g. hand size back to 13 while we had played cards)
+            # Compute stage early for stage-change and new-game checks
+            has_trick_cards = len(trick_cards) > 0
+            flat_bids = [b[1] for b in bids]
+            bidding_ended = False
+            if flat_bids:
+                consecutive_passes = 0
+                for b in reversed(flat_bids):
+                    if b == "PASS":
+                        consecutive_passes += 1
+                    else:
+                        break
+                bidding_ended = (consecutive_passes >= 3) or len(flat_bids) >= 40
+            is_bidding_active = not bidding_ended and not has_trick_cards and (len(hand) >= 13)
+            
+            if not valid_hand:
+                detected_stage = "Waiting"
+            else:
+                detected_stage = "Bidding" if is_bidding_active else "Play"
+                
+            # Check for new game transition (e.g. hand cards count increased beyond expected remaining)
             played_count = len(tracker.get_all_played_cards())
-            if len(valid_hand) == 13 and played_count > 0:
-                print("\n✨ New game detected (full hand restored). Resetting state...", flush=True)
+            played_south = len(tracker.get_played_cards_for_seat("S"))
+            expected_remaining = len(tracker.initial_hand) - played_south
+            is_new_game_transition = (
+                (played_count > 0 and len(valid_hand) > expected_remaining) or 
+                (current_stage == "Play" and detected_stage == "Bidding")
+            )
+            
+            if is_new_game_transition:
+                print("\n✨ New game detected (transition/reset). Saving partial play and resetting state...", flush=True)
+                if tracker.initial_hand and played_count > 0:
+                    if save_play:
+                        pbn_path, json_path = tracker.save_to_files(output_dir)
+                        if pbn_path:
+                            print(f"💾 Play saved successfully:\n   - {pbn_path}\n   - {json_path}", flush=True)
                 tracker = GameTracker()
                 state.reset()
                 queue.clear()
@@ -1357,6 +1419,12 @@ def run_decision_loop(interval=2.0, dry_run=False, verbose=False, once=False, sa
                 trick_cards = snapshot["trick_cards"]
                 dummy_hands = snapshot["dummy_hands"]
                 hint_text = snapshot["hint_text"]
+                # Recompute stage after reset
+                has_trick_cards = len(trick_cards) > 0
+                flat_bids = [b[1] for b in bids]
+                bidding_ended = False
+                is_bidding_active = False
+                detected_stage = "Waiting"
             
             # Always update GameTracker
             tracker.update_bids(bids)
@@ -1374,21 +1442,6 @@ def run_decision_loop(interval=2.0, dry_run=False, verbose=False, once=False, sa
                 tracker.get_all_played_cards()
             )
             
-            has_trick_cards = len(trick_cards) > 0
-            flat_bids = [b[1] for b in bids]
-            bidding_ended = False
-            if flat_bids:
-                consecutive_passes = 0
-                for b in reversed(flat_bids):
-                    if b == "PASS":
-                        consecutive_passes += 1
-                    else:
-                        break
-                bidding_ended = (consecutive_passes >= 3) or len(flat_bids) >= 40
-                
-            is_bidding_active = not bidding_ended and not has_trick_cards and (len(hand) >= 13)
-            
-            detected_stage = "Bidding" if is_bidding_active else "Play"
             if detected_stage != current_stage:
                 print(f"\n🔄 [Stage transition: {detected_stage}]", flush=True)
                 current_stage = detected_stage
@@ -1446,25 +1499,26 @@ def run_decision_loop(interval=2.0, dry_run=False, verbose=False, once=False, sa
             dummy_str = " | ".join(dummy_parts) if dummy_parts else "None"
             
             current_state_str = f"stage={detected_stage}|bids={bids_str}|hand={hand_str}|trick={trick_str}|dummies={dummy_str}"
-            if current_state_str != last_printed_state_str or current_time - last_print_time >= 2.0:
+            if current_state_str != last_printed_state_str:
                 print(f"📸 Scan: Stage={detected_stage} | Bids=[{bids_str}] | Hand=[{hand_str}] | Trick=[{trick_str}] | Dummies=[{dummy_str}]", flush=True)
                 if hint_text:
                     print(f"💡 Hint: {hint_text}", flush=True)
                 last_printed_state_str = current_state_str
                 last_print_time = current_time
                 
+            # Reset tracker when 13 tricks are completed (one round of game is over)
+            if len(tracker.completed_tricks) == 13:
+                print("\n🏆 Round complete (13 tricks played). Saving and resetting state...", flush=True)
+                if save_play:
+                    pbn_path, json_path = tracker.save_to_files(output_dir)
+                    if pbn_path:
+                        print(f"💾 Play saved successfully:\n   - {pbn_path}\n   - {json_path}", flush=True)
+                tracker = GameTracker()
+                state.reset()
+                queue.clear()
+                delta.reset()
+
             if not valid_hand:
-                if current_stage != "Waiting":
-                    print("⏳ Board inactive or hand empty. Waiting...", flush=True)
-                    current_stage = "Waiting"
-                if tracker.initial_hand:
-                    if save_play:
-                        pbn_path, json_path = tracker.save_to_files(output_dir)
-                        if pbn_path:
-                            print(f"\n💾 Play saved successfully:\n   - {pbn_path}\n   - {json_path}", flush=True)
-                    tracker = GameTracker()
-                    state.reset()
-                    queue.clear()
                 delta.reset()
                 last_hinted_state = None
                 if once:
@@ -1480,7 +1534,7 @@ def run_decision_loop(interval=2.0, dry_run=False, verbose=False, once=False, sa
                     table_str = format_bidding_table(bids)
                     print(f"\n📢 Bids updated:\n{table_str}")
                     
-                suggested_bid = decide_bid(valid_hand, flat_bids)
+                suggested_bid = decide_bid(valid_hand, flat_bids, verbose=verbose)
                 
                 # Hint click automation
                 if suggested_bid:

@@ -31,14 +31,15 @@ def get_suit_lengths(hand):
             lengths[suit] += 1
     return lengths
 
-def decide_bid(hand, bid_history):
+def decide_bid(hand, bid_history, verbose=False):
     """
     Decides the next bid based on hand cards and bidding history.
     """
     hcp = calculate_hcp(hand)
     lengths = get_suit_lengths(hand)
     
-    print(f"🤖 Strategy Bid Check: HCP={hcp}, Suit Counts={lengths}, History={bid_history}")
+    if verbose:
+        print(f"🤖 Strategy Bid Check: HCP={hcp}, Suit Counts={lengths}, History={bid_history}")
     
     # If we have no points, pass
     if hcp < 12:

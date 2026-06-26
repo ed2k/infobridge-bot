@@ -1348,34 +1348,41 @@ class BridgeAnalyzer:
                 if pbn not in played_set:
                     remaining_initial.append(card)
                     
-        # Fast path condition: we have a remembered remaining hand, and the peak count matches exactly
-        if remaining_initial and len(peaks) == len(remaining_initial):
-            detected_cards = []
-            for idx, card in enumerate(remaining_initial):
-                p = peaks[idx]
-                x_start = p["x_suit"] - 15
-                x_end = x_start + 40
-                x_start = max(0, min(x_start, w_strip - 1))
-                x_end = max(0, min(x_end, w_strip))
-                
-                orig_bbox = card.get("bbox", {})
-                
-                bbox = {
-                    "x": int(x_start / scale),
-                    "y": int(orig_bbox.get("y", 2)),
-                    "w": int((x_end - x_start) / scale),
-                    "h": int(orig_bbox.get("h", 56))
-                }
-                
-                detected_cards.append({
-                    "rank": card["rank"],
-                    "suit": card["suit"],
-                    "bbox": bbox
-                })
-            if self.verbose:
-                print(f"⚡ Fast Hand Detection Path: matched {len(detected_cards)} peaks to remembered remaining cards!")
-            return detected_cards
+        # Fast path condition: we have a remembered remaining hand. If peak count matches, align bboxes.
+        # Otherwise, directly return cached remaining cards to prevent any slow path / OCR overrides.
+        if remaining_initial:
+            if len(peaks) == len(remaining_initial):
+                detected_cards = []
+                for idx, card in enumerate(remaining_initial):
+                    p = peaks[idx]
+                    x_start = p["x_suit"] - 15
+                    x_end = x_start + 40
+                    x_start = max(0, min(x_start, w_strip - 1))
+                    x_end = max(0, min(x_end, w_strip))
+                    
+                    orig_bbox = card.get("bbox", {})
+                    
+                    bbox = {
+                        "x": int(x_start / scale),
+                        "y": int(orig_bbox.get("y", 2)),
+                        "w": int((x_end - x_start) / scale),
+                        "h": int(orig_bbox.get("h", 56))
+                    }
+                    
+                    detected_cards.append({
+                        "rank": card["rank"],
+                        "suit": card["suit"],
+                        "bbox": bbox
+                    })
+                if self.verbose:
+                    print(f"⚡ Fast Hand Detection Path: matched {len(detected_cards)} peaks to remembered remaining cards!")
+                return detected_cards
+            else:
+                if self.verbose:
+                    print(f"⚡ Fast Hand Detection Path (Fallback): peak count {len(peaks)} != expected {len(remaining_initial)}. Returning cached remaining cards.")
+                return remaining_initial
 
+        print(f"⏳ Running slow-path hand card extraction for {len(peaks)} cards (template matching/OCR)...", flush=True)
         detected_cards = []
         card_crops_list = []
 
