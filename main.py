@@ -359,101 +359,90 @@ def detect_dummy_hands(img, analyzer, initial_dummy_hands=None, played_cards=Non
                 if pbn not in played_set:
                     remaining_dummy[side].append(card)
 
-    # Determine if we already have a remembered dummy hand on one of the sides
-    dummy_side = None
-    if initial_dummy_hands:
-        for side in ["West", "North", "East"]:
-            if initial_dummy_hands.get(side):
-                dummy_side = side
-                break
-
     # 1. North dummy: Same layout as player hand (one row of cards)
     # The dummy card strip is at y=240..340 in the UI
-    if dummy_side is None or dummy_side == "North":
-        if remaining_dummy["North"]:
-            if h_img >= 340 and w_img > 600:
-                left_x = w_img // 2 - 250
-                right_x = w_img // 2 + 250
-                dummy_strip = img[240:340, left_x:right_x]
-                offset_x = left_x
-                try:
-                    # Use fast-path for North by passing initial/played to extract_hand_cards
-                    north_cards = analyzer.extract_hand_cards(
-                        dummy_strip, 
-                        initial_hand=initial_dummy_hands["North"], 
-                        played_cards=played_cards
-                    )
-                    for card in north_cards:
-                        if card.get("rank") and card.get("suit"):
-                            bbox = card.get("bbox", {})
-                            detected_cards.append({
-                                "rank": card["rank"],
-                                "suit": card["suit"],
-                                "cx": offset_x + bbox.get("x", 0) + bbox.get("w", 0) // 2,
-                                "cy": 240 + bbox.get("y", 0) + bbox.get("h", 0) // 2,
-                                "side": "North",
-                                "bbox": {
-                                    "x": bbox.get("x", 0),
-                                    "y": bbox.get("y", 0) + 240,
-                                    "w": bbox.get("w", 0),
-                                    "h": bbox.get("h", 0)
-                                }
-                            })
-                except Exception:
-                    pass
+    # Fast path: use remembered cards when available
+    if remaining_dummy["North"] and h_img >= 340 and w_img > 600:
+        left_x = w_img // 2 - 250
+        right_x = w_img // 2 + 250
+        dummy_strip = img[240:340, left_x:right_x]
+        offset_x = left_x
+        try:
+            north_cards = analyzer.extract_hand_cards(
+                dummy_strip, 
+                initial_hand=initial_dummy_hands.get("North") if initial_dummy_hands else None, 
+                played_cards=played_cards
+            )
+            for card in north_cards:
+                if card.get("rank") and card.get("suit"):
+                    bbox = card.get("bbox", {})
+                    detected_cards.append({
+                        "rank": card["rank"],
+                        "suit": card["suit"],
+                        "cx": offset_x + bbox.get("x", 0) + bbox.get("w", 0) // 2,
+                        "cy": 240 + bbox.get("y", 0) + bbox.get("h", 0) // 2,
+                        "side": "North",
+                        "bbox": {
+                            "x": bbox.get("x", 0),
+                            "y": bbox.get("y", 0) + 240,
+                            "w": bbox.get("w", 0),
+                            "h": bbox.get("h", 0)
+                        }
+                    })
+        except Exception:
+            pass
+    
+    # Normal detection path for North dummy (also serves as fallback)
+    if not any(c.get("side") == "North" for c in detected_cards) and h_img >= 340:
+        if w_img > 600:
+            left_x = w_img // 2 - 250
+            right_x = w_img // 2 + 250
+            dummy_strip = img[240:340, left_x:right_x]
+            offset_x = left_x
         else:
-            # Normal detection path for North dummy
-            if h_img >= 340:
-                if w_img > 600:
-                    left_x = w_img // 2 - 250
-                    right_x = w_img // 2 + 250
-                    dummy_strip = img[240:340, left_x:right_x]
-                    offset_x = left_x
-                else:
-                    dummy_strip = img[240:340, 0:w_img]
-                    offset_x = 0
-                    
-                try:
-                    import os
-                    os.makedirs("debug", exist_ok=True)
-                    cv2.imwrite("debug/dummy_strip_north.png", dummy_strip)
-                    
-                    hsv_dummy = cv2.cvtColor(dummy_strip, cv2.COLOR_BGR2HSV)
-                    white_pixels = np.sum((hsv_dummy[:,:,1] < 30) & (hsv_dummy[:,:,2] > 200))
-                    white_ratio = white_pixels / (dummy_strip.shape[0] * dummy_strip.shape[1])
-                    
-                    if white_ratio >= 0.15:
-                        north_cards = analyzer.extract_hand_cards(dummy_strip)
-                        for card in north_cards:
-                            if card.get("rank") and card.get("suit"):
-                                bbox = card.get("bbox", {})
-                                detected_cards.append({
-                                    "rank": card["rank"],
-                                    "suit": card["suit"],
-                                    "cx": offset_x + bbox.get("x", 0) + bbox.get("w", 0) // 2,
-                                    "cy": 240 + bbox.get("y", 0) + bbox.get("h", 0) // 2,
-                                    "side": "North",
-                                    "bbox": {
-                                        "x": bbox.get("x", 0),
-                                        "y": bbox.get("y", 0) + 240,
-                                        "w": bbox.get("w", 0),
-                                        "h": bbox.get("h", 0)
-                                    }
-                                })
-                except Exception:
-                    pass
+            dummy_strip = img[240:340, 0:w_img]
+            offset_x = 0
+            
+        try:
+            import os
+            os.makedirs("debug", exist_ok=True)
+            cv2.imwrite("debug/dummy_strip_north.png", dummy_strip)
+            
+            hsv_dummy = cv2.cvtColor(dummy_strip, cv2.COLOR_BGR2HSV)
+            white_pixels = np.sum((hsv_dummy[:,:,1] < 30) & (hsv_dummy[:,:,2] > 200))
+            white_ratio = white_pixels / (dummy_strip.shape[0] * dummy_strip.shape[1])
+            
+            if white_ratio >= 0.15:
+                north_cards = analyzer.extract_hand_cards(dummy_strip)
+                for card in north_cards:
+                    if card.get("rank") and card.get("suit"):
+                        bbox = card.get("bbox", {})
+                        detected_cards.append({
+                            "rank": card["rank"],
+                            "suit": card["suit"],
+                            "cx": offset_x + bbox.get("x", 0) + bbox.get("w", 0) // 2,
+                            "cy": 240 + bbox.get("y", 0) + bbox.get("h", 0) // 2,
+                            "side": "North",
+                            "bbox": {
+                                "x": bbox.get("x", 0),
+                                "y": bbox.get("y", 0) + 240,
+                                "w": bbox.get("w", 0),
+                                "h": bbox.get("h", 0)
+                            }
+                        })
+        except Exception:
+            pass
 
     # 2. East/West dummy: Template Matching
     # Populate detected_cards directly for sides where we already have remembered cards
     for side in ["West", "East"]:
-        if dummy_side is None or dummy_side == side:
-            if remaining_dummy[side]:
-                for card in remaining_dummy[side]:
-                    detected_cards.append({
-                        "rank": card["rank"],
-                        "suit": card["suit"],
-                        "cx": card.get("cx", 0),
-                        "cy": card.get("cy", 0),
+        if remaining_dummy[side]:
+            for card in remaining_dummy[side]:
+                detected_cards.append({
+                    "rank": card["rank"],
+                    "suit": card["suit"],
+                    "cx": card.get("cx", 0),
+                    "cy": card.get("cy", 0),
                         "side": side,
                         "bbox": card.get("bbox", {"x": 0, "y": 0, "w": 0, "h": 0})
                     })
@@ -472,11 +461,11 @@ def detect_dummy_hands(img, analyzer, initial_dummy_hands=None, played_cards=Non
 
     crops = []
     if h_img >= 600:
-        if (dummy_side is None or dummy_side == "West") and w_img >= 110 and not remaining_dummy["West"]:
+        if w_img >= 110 and not remaining_dummy["West"]:
             west_crop = img[320:min(620, h_img), 0:110]
             crops.append(("West", west_crop, 0, 320))
             cv2.imwrite("debug/dummy_strip_west.png", west_crop)
-        if (dummy_side is None or dummy_side == "East") and w_img >= 380 and not remaining_dummy["East"]:
+        if w_img >= 380 and not remaining_dummy["East"]:
             east_crop = img[320:min(620, h_img), 380:w_img]
             crops.append(("East", east_crop, 380, 320))
             cv2.imwrite("debug/dummy_strip_east.png", east_crop)
@@ -1346,6 +1335,14 @@ def run_decision_loop(interval=2.0, dry_run=False, verbose=False, once=False, sa
         last_printed_state_str = None
         last_print_time = 0
         
+        # Hand size tracking: skip hand/dummy detection when hand decreases (card was played)
+        prev_hand_size = 0
+        hand_decreased = False
+        valid_hand = []
+        
+        # Trick play sequence tracking
+        trick_play_sequence = []
+        
         # In single pass (once) mode, we want to run until the initial screen analysis is done.
         # So we queue the captures and wait for the queue to be empty before doing the logic.
         first_scan_queued = False
@@ -1358,12 +1355,23 @@ def run_decision_loop(interval=2.0, dry_run=False, verbose=False, once=False, sa
             if delta.region_changed("bidding", bidding_img):
                 queue.put("bidding", bidding_img)
                 
+            # Always capture and check delta to detect what changed
             hand_img = cap.capture_player_hand()
             import os; os.makedirs("debug", exist_ok=True)
             cv2.imwrite("debug/player_hand_area.png", hand_img)
-            if delta.region_changed("hand", hand_img):
-                queue.put("hand", hand_img)
-                
+            
+            hand_changed = delta.region_changed("hand", hand_img)
+            current_hand_size = len(valid_hand) if valid_hand else prev_hand_size
+            hand_decreased = prev_hand_size > 0 and current_hand_size < prev_hand_size
+            prev_hand_size = current_hand_size if current_hand_size > 0 else prev_hand_size
+            
+            if hand_decreased:
+                # Card was played — skip expensive hand/dummy OCR, only detect trick
+                pass
+            else:
+                if hand_changed:
+                    queue.put("hand", hand_img)
+                    
             trick_img = cap.capture_trick()
             if delta.region_changed("trick", trick_img):
                 queue.put("trick", trick_img)
@@ -1395,15 +1403,24 @@ def run_decision_loop(interval=2.0, dry_run=False, verbose=False, once=False, sa
                 detected_stage = "Waiting"
             else:
                 detected_stage = "Bidding" if is_bidding_active else "Play"
-                
+            
+            # Capture UI for dummy detection (after stage is known)
+            if detected_stage == "Play" and not hand_decreased:
+                ui_img = cap.capture_ui()
+                if delta.region_changed("ui", ui_img):
+                    queue.put("ui", ui_img)
+                    
             # Check for new game transition (e.g. hand cards count increased beyond expected remaining)
-            played_count = len(tracker.get_all_played_cards())
-            played_south = len(tracker.get_played_cards_for_seat("S"))
-            expected_remaining = len(tracker.initial_hand) - played_south
-            is_new_game_transition = (
-                (played_count > 0 and len(valid_hand) > expected_remaining) or 
-                (current_stage == "Play" and detected_stage == "Bidding")
-            )
+            # Skip when hand just decreased — that's a normal play, not a new game
+            is_new_game_transition = False
+            if not hand_decreased:
+                played_count = len(tracker.get_all_played_cards())
+                played_south = len(tracker.get_played_cards_for_seat("S"))
+                expected_remaining = len(tracker.initial_hand) - played_south
+                is_new_game_transition = (
+                    (played_count > 0 and len(valid_hand) > expected_remaining) or 
+                    (current_stage == "Play" and detected_stage == "Bidding")
+                )
             
             if is_new_game_transition:
                 print("\n✨ New game detected (transition/reset). Saving partial play and resetting state...", flush=True)
@@ -1438,12 +1455,39 @@ def run_decision_loop(interval=2.0, dry_run=False, verbose=False, once=False, sa
             
             # Always update GameTracker
             tracker.update_bids(bids)
-            tracker.set_initial_hand(valid_hand)
+            if not hand_decreased:
+                tracker.set_initial_hand(valid_hand)
             if trick_img is not None:
                 tracker.register_trick_state(trick_cards, trick_img.shape[1], trick_img.shape[0])
             for side in ["West", "North", "East"]:
                 if dummy_hands[side]:
                     tracker.set_initial_dummy_hand(side, dummy_hands[side])
+            
+            # Track trick play sequence: record new cards that appeared in the trick
+            if trick_cards and trick_cards != last_trick_cards:
+                for card in trick_cards:
+                    pbn = tracker.to_pbn_card(card["rank"], card["suit"])
+                    if pbn not in [c["pbn"] for c in trick_play_sequence]:
+                        trick_play_sequence.append({
+                            "pbn": pbn,
+                            "rank": card["rank"],
+                            "suit": card["suit"]
+                        })
+            
+            # When hand decreased (card played), remove the played card from remembered hand
+            if hand_decreased and trick_cards and tracker.initial_hand:
+                new_trick_pbns = {tracker.to_pbn_card(c["rank"], c["suit"]) for c in trick_cards}
+                old_trick_pbns = {tracker.to_pbn_card(c["rank"], c["suit"]) for c in last_trick_cards} if last_trick_cards else set()
+                newly_played = new_trick_pbns - old_trick_pbns
+                if newly_played:
+                    for pbn in newly_played:
+                        tracker.initial_hand = [
+                            c for c in tracker.initial_hand
+                            if tracker.to_pbn_card(c["rank"], c["suit"]) != pbn
+                        ]
+                    print(f"🃏 Removed played card(s) from hand: {', '.join(newly_played)}", flush=True)
+            
+            last_trick_cards = list(trick_cards) if trick_cards else []
             
             # Sync the tracked remembered state to GameState
             state.update_remembered_state(
@@ -1455,11 +1499,6 @@ def run_decision_loop(interval=2.0, dry_run=False, verbose=False, once=False, sa
             if detected_stage != current_stage:
                 print(f"\n🔄 [Stage transition: {detected_stage}]", flush=True)
                 current_stage = detected_stage
-                
-            if detected_stage == "Play":
-                ui_img = cap.capture_ui()
-                if delta.region_changed("ui", ui_img):
-                    queue.put("ui", ui_img)
             
             if is_bidding_active:
                 hint_img = cap.capture_bidding_hint()
@@ -1634,7 +1673,6 @@ def run_decision_loop(interval=2.0, dry_run=False, verbose=False, once=False, sa
                         
                     # If trick cards changed, reset played flag in case a click was ignored
                     if trick_cards != last_trick_cards:
-                        last_trick_cards = trick_cards
                         # If someone else played, we might be allowed to play now
                         if played_in_current_trick and current_time - last_action_time > 1.5:
                             # If hand size did not decrease, the click was ignored
