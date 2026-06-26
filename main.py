@@ -359,62 +359,30 @@ def detect_dummy_hands(img, analyzer, initial_dummy_hands=None, played_cards=Non
                 if pbn not in played_set:
                     remaining_dummy[side].append(card)
 
+    # Determine if we already have a remembered dummy hand on one of the sides
+    dummy_side = None
+    if initial_dummy_hands:
+        for side in ["West", "North", "East"]:
+            if initial_dummy_hands.get(side):
+                dummy_side = side
+                break
+
     # 1. North dummy: Same layout as player hand (one row of cards)
     # The dummy card strip is at y=240..340 in the UI
-    if remaining_dummy["North"]:
-        if h_img >= 340 and w_img > 600:
-            left_x = w_img // 2 - 250
-            right_x = w_img // 2 + 250
-            dummy_strip = img[240:340, left_x:right_x]
-            offset_x = left_x
-            try:
-                # Use fast-path for North by passing initial/played to extract_hand_cards
-                north_cards = analyzer.extract_hand_cards(
-                    dummy_strip, 
-                    initial_hand=initial_dummy_hands["North"], 
-                    played_cards=played_cards
-                )
-                for card in north_cards:
-                    if card.get("rank") and card.get("suit"):
-                        bbox = card.get("bbox", {})
-                        detected_cards.append({
-                            "rank": card["rank"],
-                            "suit": card["suit"],
-                            "cx": offset_x + bbox.get("x", 0) + bbox.get("w", 0) // 2,
-                            "cy": 240 + bbox.get("y", 0) + bbox.get("h", 0) // 2,
-                            "side": "North",
-                            "bbox": {
-                                "x": bbox.get("x", 0),
-                                "y": bbox.get("y", 0) + 240,
-                                "w": bbox.get("w", 0),
-                                "h": bbox.get("h", 0)
-                            }
-                        })
-            except Exception:
-                pass
-    else:
-        # Normal detection path for North dummy
-        if h_img >= 340:
-            if w_img > 600:
+    if dummy_side is None or dummy_side == "North":
+        if remaining_dummy["North"]:
+            if h_img >= 340 and w_img > 600:
                 left_x = w_img // 2 - 250
                 right_x = w_img // 2 + 250
                 dummy_strip = img[240:340, left_x:right_x]
                 offset_x = left_x
-            else:
-                dummy_strip = img[240:340, 0:w_img]
-                offset_x = 0
-                
-            try:
-                import os
-                os.makedirs("debug", exist_ok=True)
-                cv2.imwrite("debug/dummy_strip_north.png", dummy_strip)
-                
-                hsv_dummy = cv2.cvtColor(dummy_strip, cv2.COLOR_BGR2HSV)
-                white_pixels = np.sum((hsv_dummy[:,:,1] < 30) & (hsv_dummy[:,:,2] > 200))
-                white_ratio = white_pixels / (dummy_strip.shape[0] * dummy_strip.shape[1])
-                
-                if white_ratio >= 0.15:
-                    north_cards = analyzer.extract_hand_cards(dummy_strip)
+                try:
+                    # Use fast-path for North by passing initial/played to extract_hand_cards
+                    north_cards = analyzer.extract_hand_cards(
+                        dummy_strip, 
+                        initial_hand=initial_dummy_hands["North"], 
+                        played_cards=played_cards
+                    )
                     for card in north_cards:
                         if card.get("rank") and card.get("suit"):
                             bbox = card.get("bbox", {})
@@ -431,22 +399,64 @@ def detect_dummy_hands(img, analyzer, initial_dummy_hands=None, played_cards=Non
                                     "h": bbox.get("h", 0)
                                 }
                             })
-            except Exception:
-                pass
+                except Exception:
+                    pass
+        else:
+            # Normal detection path for North dummy
+            if h_img >= 340:
+                if w_img > 600:
+                    left_x = w_img // 2 - 250
+                    right_x = w_img // 2 + 250
+                    dummy_strip = img[240:340, left_x:right_x]
+                    offset_x = left_x
+                else:
+                    dummy_strip = img[240:340, 0:w_img]
+                    offset_x = 0
+                    
+                try:
+                    import os
+                    os.makedirs("debug", exist_ok=True)
+                    cv2.imwrite("debug/dummy_strip_north.png", dummy_strip)
+                    
+                    hsv_dummy = cv2.cvtColor(dummy_strip, cv2.COLOR_BGR2HSV)
+                    white_pixels = np.sum((hsv_dummy[:,:,1] < 30) & (hsv_dummy[:,:,2] > 200))
+                    white_ratio = white_pixels / (dummy_strip.shape[0] * dummy_strip.shape[1])
+                    
+                    if white_ratio >= 0.15:
+                        north_cards = analyzer.extract_hand_cards(dummy_strip)
+                        for card in north_cards:
+                            if card.get("rank") and card.get("suit"):
+                                bbox = card.get("bbox", {})
+                                detected_cards.append({
+                                    "rank": card["rank"],
+                                    "suit": card["suit"],
+                                    "cx": offset_x + bbox.get("x", 0) + bbox.get("w", 0) // 2,
+                                    "cy": 240 + bbox.get("y", 0) + bbox.get("h", 0) // 2,
+                                    "side": "North",
+                                    "bbox": {
+                                        "x": bbox.get("x", 0),
+                                        "y": bbox.get("y", 0) + 240,
+                                        "w": bbox.get("w", 0),
+                                        "h": bbox.get("h", 0)
+                                    }
+                                })
+                except Exception:
+                    pass
 
     # 2. East/West dummy: Template Matching
     # Populate detected_cards directly for sides where we already have remembered cards
     for side in ["West", "East"]:
-        if remaining_dummy[side]:
-            for card in remaining_dummy[side]:
-                detected_cards.append({
-                    "rank": card["rank"],
-                    "suit": card["suit"],
-                    "cx": card.get("cx", 0),
-                    "cy": card.get("cy", 0),
-                    "side": side,
-                    "bbox": card.get("bbox", {"x": 0, "y": 0, "w": 0, "h": 0})
-                })
+        if dummy_side is None or dummy_side == side:
+            if remaining_dummy[side]:
+                for card in remaining_dummy[side]:
+                    detected_cards.append({
+                        "rank": card["rank"],
+                        "suit": card["suit"],
+                        "cx": card.get("cx", 0),
+                        "cy": card.get("cy", 0),
+                        "side": side,
+                        "bbox": card.get("bbox", {"x": 0, "y": 0, "w": 0, "h": 0})
+                    })
 
     if not hasattr(analyzer, 'rank_templates'):
         analyzer.rank_templates = {}
@@ -462,11 +472,11 @@ def detect_dummy_hands(img, analyzer, initial_dummy_hands=None, played_cards=Non
 
     crops = []
     if h_img >= 600:
-        if w_img >= 110 and not remaining_dummy["West"]:
+        if (dummy_side is None or dummy_side == "West") and w_img >= 110 and not remaining_dummy["West"]:
             west_crop = img[320:min(620, h_img), 0:110]
             crops.append(("West", west_crop, 0, 320))
             cv2.imwrite("debug/dummy_strip_west.png", west_crop)
-        if w_img >= 380 and not remaining_dummy["East"]:
+        if (dummy_side is None or dummy_side == "East") and w_img >= 380 and not remaining_dummy["East"]:
             east_crop = img[320:min(620, h_img), 380:w_img]
             crops.append(("East", east_crop, 380, 320))
             cv2.imwrite("debug/dummy_strip_east.png", east_crop)

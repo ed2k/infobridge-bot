@@ -18,7 +18,9 @@ def main():
     # 1. Generate the mockup image
     print("Generating sample board screenshot...")
     import generate_mock
-    generate_mock.main()
+    from unittest.mock import patch
+    with patch("generate_mock.capture_live_composite", return_value=None):
+        generate_mock.main()
         
     # Read the full mock image
     img = cv2.imread(os.path.join("debug", "sample_board.png"))

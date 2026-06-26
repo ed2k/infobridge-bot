@@ -50,16 +50,16 @@ class ScreenCapture:
                     "height": int(h * 0.6)
                 },
                 "bidding_hint_roi": {
-                    "x": int(w * 0.72),
-                    "y": 30,
-                    "width": int(w * 0.26),
-                    "height": int(h * 0.08)
+                    "x": int(w * 0.55),
+                    "y": int(h * 0.05),
+                    "width": int(w * 0.25),
+                    "height": int(h * 0.1)
                 },
                 "bidding_roi": {
-                    "x": int(w * 0.72),
-                    "y": 60,
-                    "width": int(w * 0.26),
-                    "height": int(h * 0.25)
+                    "x": int(w * 0.55),
+                    "y": int(h * 0.15),
+                    "width": int(w * 0.25),
+                    "height": int(h * 0.3)
                 },
                 "trick_roi": {
                     "x": int(w * 0.55),

@@ -303,8 +303,8 @@ class BridgeAnalyzer:
                 max_right = max(w["left"] + w["width"] for w in g_words)
                 max_bottom = max(w["top"] + w["height"] for w in g_words)
 
-                # Resolve suit symbol images in level bids (e.g. 1H, 1S) that Tesseract misreads
-                if len(std_text) >= 2 and std_text[0] in "1234567" and std_text[1:] not in ("S", "H", "D", "C", "NT"):
+                # Resolve suit symbol images in level bids (e.g. 1H, 1S)
+                if len(std_text) >= 2 and std_text[0] in "1234567" and std_text[1:] != "NT":
                     x1 = int(min_left / fx)
                     y1 = int(min_top_w / fx)
                     x2 = int(max_right / fx)
@@ -444,7 +444,7 @@ class BridgeAnalyzer:
         col_centers = [best_c0 + idx * col_width for idx in range(4)]
         col_dirs = best_rotation
 
-        bid_words = []
+        candidate_words = []
         for cx, cy, text, w, h in bid_candidates:
             closest_idx = 0
             min_dist = float('inf')
@@ -456,6 +456,34 @@ class BridgeAnalyzer:
 
             std_text = self.standardize_bid(text)
 
+            # Resolve suit symbol images in level bids (e.g. 1H, 1S)
+            if len(std_text) >= 2 and std_text[0] in "1234567" and std_text[1:] != "NT":
+                x1 = int(cx - w / 2)
+                y1 = int(cy - h / 2)
+                x2 = int(cx + w / 2)
+                y2 = int(cy + h / 2)
+                x1 = max(0, min(x1, bidding_img.shape[1] - 1))
+                y1 = max(0, min(y1, bidding_img.shape[0] - 1))
+                x2 = max(0, min(x2, bidding_img.shape[1]))
+                y2 = max(0, min(y2, bidding_img.shape[0]))
+                
+                if x2 > x1 and y2 > y1:
+                    word_crop = bidding_img[y1:y2, x1:x2]
+                    suit_w = int(word_crop.shape[1] * 0.6)
+                    if suit_w > 0:
+                        suit_crop = word_crop[:, word_crop.shape[1] - suit_w:]
+                        suit = self.classify_suit_template_matching(suit_crop)
+                        if not suit:
+                            suit = self.classify_suit_by_color_shape(suit_crop)
+                        if suit in ("spade", "heart", "diamond", "club"):
+                            suit_map = {
+                                "spade": "S",
+                                "heart": "H",
+                                "diamond": "D",
+                                "club": "C"
+                            }
+                            std_text = f"{std_text[0]}{suit_map[suit]}"
+
             bid_pattern = re.compile(
                 r'^(PASS|PAS|PA|PASSED|DBL|DOUBLE|RDBL|REDOUBLE|X|XX|'
                 r'[1-7]\s*(?:NT|N|S|H|D|C|SPADES|HEARTS|DIAMONDS|CLUBS))$',
@@ -464,19 +492,23 @@ class BridgeAnalyzer:
 
             if bid_pattern.match(std_text):
                 direction = col_dirs[closest_idx]
-                if with_bboxes:
-                    bbox = {"x": cx - w/2, "y": cy - h/2, "w": w, "h": h}
-                    bid_words.append((closest_idx, direction, std_text, bbox))
-                else:
-                    bid_words.append((closest_idx, direction, std_text, None))
+                bbox = {"x": cx - w/2, "y": cy - h/2, "w": w, "h": h}
+                candidate_words.append({
+                    "cy": cy,
+                    "cx": cx,
+                    "col_idx": closest_idx,
+                    "direction": direction,
+                    "text": std_text,
+                    "bbox": bbox
+                })
 
-        bid_words.sort(key=lambda x: x[1])
+        candidate_words.sort(key=lambda w: w["cy"])
 
         word_rows = []
-        if bid_words:
-            current_row = [bid_words[0]]
-            for w in bid_words[1:]:
-                if abs(w[1] - current_row[-1][1]) < 0.5:
+        if candidate_words:
+            current_row = [candidate_words[0]]
+            for w in candidate_words[1:]:
+                if abs(w["cy"] - current_row[-1]["cy"]) < 30:
                     current_row.append(w)
                 else:
                     word_rows.append(current_row)
@@ -485,12 +517,22 @@ class BridgeAnalyzer:
 
         results = []
         for row in word_rows:
-            for entry in row:
+            col_groups = {}
+            for w in row:
+                col_groups.setdefault(w["col_idx"], []).append(w)
+
+            for col_idx in sorted(col_groups.keys()):
+                g_words = col_groups[col_idx]
+                g_words.sort(key=lambda w: w["cx"])
+                combined_text = " ".join(w["text"] for w in g_words)
+                std_text = self.standardize_bid(combined_text)
+                
+                first_w = g_words[0]
+                direction = first_w["direction"]
+                
                 if with_bboxes:
-                    _, direction, std_text, bbox = entry
-                    results.append({"direction": direction, "bid": std_text, "bbox": bbox})
+                    results.append({"direction": direction, "bid": std_text, "bbox": first_w["bbox"]})
                 else:
-                    _, direction, std_text, _ = entry
                     results.append((direction, std_text))
 
         return results
