@@ -132,6 +132,183 @@ class BridgeAnalyzer:
         print(f"🔍 [Bid Detection] Extracted bids: {results}", flush=True)
         return results
 
+    def calibrate_bid_input_roi(self, bidding_img, fx=4.0):
+        """
+        Calibrates and saves the bid_input_roi to config.json based on bidding_img.
+        """
+        if not HAS_PADDLE:
+            print("PaddleOCR is not available for calibration.", flush=True)
+            return False
+            
+        processed = self.preprocess_for_ocr(bidding_img, fx=fx, thresh_val=None)
+        processed_bgr = cv2.cvtColor(processed, cv2.COLOR_GRAY2BGR)
+        detections = paddle_ocr_positions(processed_bgr, min_confidence=0.3)
+        if not detections:
+            print("No text detected in the bidding area for calibration.", flush=True)
+            return False
+            
+        mapped_dets = []
+        for text, cx, cy, w, h in detections:
+            mapped_dets.append({
+                "text": text.strip().upper(),
+                "cx": cx / fx,
+                "cy": cy / fx,
+                "w": w / fx,
+                "h": h / fx
+            })
+            
+        try:
+            import json
+            config_path = "config.json"
+            bidding_roi_x = 0
+            bidding_roi_y = 0
+            config_data = {}
+            if os.path.exists(config_path):
+                with open(config_path, "r") as f:
+                    config_data = json.load(f)
+                bidding_roi_x = config_data.get("bidding_roi", {}).get("x", 0)
+                bidding_roi_y = config_data.get("bidding_roi", {}).get("y", 0)
+            
+            bid_input = {}
+            # Row 1: Numbers 1-7
+            num_dets = [d for d in mapped_dets if d["text"] in "1234567" and 140 < d["cy"] < 170]
+            for i in range(7):
+                cx_val = 35.0 + i * 29.75
+                cy_val = 156.0
+                close_det = [d for d in num_dets if abs(d["cx"] - cx_val) < 10]
+                if close_det:
+                    w_val = close_det[0]["w"]
+                    h_val = close_det[0]["h"]
+                    cx_val = close_det[0]["cx"]
+                    cy_val = close_det[0]["cy"]
+                else:
+                    w_val = 22.0
+                    h_val = 22.0
+                bid_input[str(i + 1)] = {
+                    "x": int(bidding_roi_x + cx_val - w_val / 2),
+                    "y": int(bidding_roi_y + cy_val - h_val / 2),
+                    "width": int(w_val),
+                    "height": int(h_val)
+                }
+            
+            # Row 2: Suits
+            suit_keys = ["C", "D", "H", "S"]
+            for idx, key in enumerate(suit_keys):
+                cx_val = 35.0 + idx * 29.75
+                cy_val = 191.5
+                w_val = 22.0
+                h_val = 22.0
+                close_det = [d for d in mapped_dets if 180 < d["cy"] < 205 and abs(d["cx"] - cx_val) < 10]
+                if close_det:
+                    cx_val = close_det[0]["cx"]
+                    cy_val = close_det[0]["cy"]
+                    w_val = close_det[0]["w"]
+                    h_val = close_det[0]["h"]
+                bid_input[key] = {
+                    "x": int(bidding_roi_x + cx_val - w_val / 2),
+                    "y": int(bidding_roi_y + cy_val - h_val / 2),
+                    "width": int(w_val),
+                    "height": int(h_val)
+                }
+            
+            # NT
+            nt_dets = [d for d in mapped_dets if "NT" in d["text"] and 180 < d["cy"] < 205]
+            nt_cx = 159.2
+            nt_cy = 192.0
+            nt_w = 30.0
+            nt_h = 24.0
+            if nt_dets:
+                nt_cx = nt_dets[0]["cx"]
+                nt_cy = nt_dets[0]["cy"]
+                nt_w = nt_dets[0]["w"]
+                nt_h = nt_dets[0]["h"]
+            bid_input["NT"] = {
+                "x": int(bidding_roi_x + nt_cx - nt_w / 2),
+                "y": int(bidding_roi_y + nt_cy - nt_h / 2),
+                "width": int(nt_w),
+                "height": int(nt_h)
+            }
+            
+            # Alert
+            a_dets = [d for d in mapped_dets if d["text"] in ("A", "ALERT", "ALER") and 180 < d["cy"] < 205]
+            a_cx = 212.9
+            a_cy = 191.4
+            a_w = 22.0
+            a_h = 23.0
+            if a_dets:
+                a_cx = a_dets[0]["cx"]
+                a_cy = a_dets[0]["cy"]
+                a_w = a_dets[0]["w"]
+                a_h = a_dets[0]["h"]
+            bid_input["A"] = {
+                "x": int(bidding_roi_x + a_cx - a_w / 2),
+                "y": int(bidding_roi_y + a_cy - a_h / 2),
+                "width": int(a_w),
+                "height": int(a_h)
+            }
+            
+            # Row 3: Actions
+            pass_dets = [d for d in mapped_dets if "PASS" in d["text"] and 215 < d["cy"] < 240]
+            pass_cx = 42.6
+            pass_cy = 224.8
+            pass_w = 43.0
+            pass_h = 23.0
+            if pass_dets:
+                pass_cx = pass_dets[0]["cx"]
+                pass_cy = pass_dets[0]["cy"]
+                pass_w = pass_dets[0]["w"]
+                pass_h = pass_dets[0]["h"]
+            bid_input["PASS"] = {
+                "x": int(bidding_roi_x + pass_cx - pass_w / 2),
+                "y": int(bidding_roi_y + pass_cy - pass_h / 2),
+                "width": int(pass_w),
+                "height": int(pass_h)
+            }
+            
+            x_dets = [d for d in mapped_dets if d["text"] in ("X", "DBL", "DOUBLE", "XX", "RDBL", "REDOUBLE") and 215 < d["cy"] < 240]
+            x_cx = 87.6
+            x_cy = 224.8
+            x_w = 22.0
+            x_h = 23.0
+            if x_dets:
+                x_cx = x_dets[0]["cx"]
+                x_cy = x_dets[0]["cy"]
+                x_w = x_dets[0]["w"]
+                x_h = x_dets[0]["h"]
+            bid_input["X"] = {
+                "x": int(bidding_roi_x + x_cx - x_w / 2),
+                "y": int(bidding_roi_y + x_cy - x_h / 2),
+                "width": int(x_w),
+                "height": int(x_h)
+            }
+            
+            confirm_dets = [d for d in mapped_dets if d["text"] in ("CONFIRM", "BID", "OK", "CONFIR") and 215 < d["cy"] < 240]
+            confirm_cx = 154.1
+            confirm_cy = 224.9
+            confirm_w = 63.0
+            confirm_h = 18.0
+            if confirm_dets:
+                confirm_cx = confirm_dets[0]["cx"]
+                confirm_cy = confirm_dets[0]["cy"]
+                confirm_w = confirm_dets[0]["w"]
+                confirm_h = confirm_dets[0]["h"]
+            bid_input["CONFIRM"] = {
+                "x": int(bidding_roi_x + confirm_cx - confirm_w / 2),
+                "y": int(bidding_roi_y + confirm_cy - confirm_h / 2),
+                "width": int(confirm_w),
+                "height": int(confirm_h)
+            }
+            
+            # Update config.json
+            config_data["bid_input_roi"] = bid_input
+            with open(config_path, "w") as f:
+                json.dump(config_data, f, indent=4)
+            print("💾 Collected and saved bid_input_roi to config.json!", flush=True)
+            return True
+        except Exception as e:
+            print(f"Error calibrating bid input ROIs: {e}", flush=True)
+            return False
+
     def extract_bids_with_bboxes(self, bidding_img, fx=4.0):
         return self._extract_bids_structured(bidding_img, fx=fx, with_bboxes=True)
 
@@ -604,7 +781,8 @@ class BridgeAnalyzer:
                 re.IGNORECASE
             )
 
-            if bid_pattern.match(std_text):
+            is_q = (std_text == "?")
+            if is_q or bid_pattern.match(std_text):
                 direction = col_dirs[closest_idx]
                 bbox = {"x": cx - w/2, "y": cy - h/2, "w": w, "h": h}
                 candidate_words.append({
@@ -612,7 +790,7 @@ class BridgeAnalyzer:
                     "cx": cx,
                     "col_idx": closest_idx,
                     "direction": direction,
-                    "text": std_text,
+                    "text": "?" if is_q else std_text,
                     "bbox": bbox
                 })
 
@@ -667,7 +845,10 @@ class BridgeAnalyzer:
             valid_rows.append(row)
 
         results = []
+        stopped = False
         for row in valid_rows:
+            if stopped:
+                break
             col_groups = {}
             for w in row:
                 col_groups.setdefault(w["col_idx"], []).append(w)
@@ -676,6 +857,9 @@ class BridgeAnalyzer:
                 g_words = col_groups[col_idx]
                 g_words.sort(key=lambda w: w["cx"])
                 combined_text = " ".join(w["text"] for w in g_words)
+                if "?" in combined_text:
+                    stopped = True
+                    break
                 std_text = self.standardize_bid(combined_text)
                 
                 first_w = g_words[0]

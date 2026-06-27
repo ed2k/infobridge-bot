@@ -81,6 +81,23 @@ def main():
     with open(CONFIG_FILE, "w") as f:
         json.dump(config, f, indent=4)
         
+    # Auto-calibrate bid input selection buttons if open on screen
+    try:
+        from capture import ScreenCapture
+        from analyzer import BridgeAnalyzer
+        cap = ScreenCapture()
+        analyzer = BridgeAnalyzer()
+        bidding_img = cap.capture_bidding()
+        if bidding_img is not None:
+            print("\n⏳ Auto-detecting bid input selection buttons (1-7, suits, PASS, X, Confirm)...", flush=True)
+            success = analyzer.calibrate_bid_input_roi(bidding_img)
+            if success:
+                print("✅ Auto-detected and saved bid_input_roi successfully!")
+            else:
+                print("ℹ️ Note: Bidding input selection buttons were not visible on screen. You can calibrate them later.")
+    except Exception as e:
+        print(f"⚠️ Note: Could not auto-detect bid input buttons: {e}")
+        
     print("\n====================================================")
     print(f"🎉 Calibration completed successfully!")
     print(f"Configuration saved to: {os.path.abspath(CONFIG_FILE)}")

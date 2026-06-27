@@ -130,6 +130,42 @@ def test_standardize_bid_empty():
     assert a.standardize_bid("") == ""
 
 
+def test_stop_at_question_mark():
+    a = make_analyzer()
+    mock_detections = [
+        ("W", 39.0, 21.0, 20.0, 20.0),
+        ("N", 95.0, 21.0, 20.0, 20.0),
+        ("E", 153.0, 21.0, 20.0, 20.0),
+        ("S", 209.0, 21.0, 20.0, 20.0),
+        
+        ("Pass", 39.0, 52.0, 40.0, 20.0),
+        ("1H", 95.0, 52.0, 30.0, 20.0),
+        ("Pass", 153.0, 52.0, 40.0, 20.0),
+        ("1S", 209.0, 52.0, 30.0, 20.0),
+        
+        ("Pass", 39.0, 84.0, 40.0, 20.0),
+        ("?", 95.0, 84.0, 15.0, 20.0),
+    ]
+    upscaled = []
+    for text, cx, cy, w, h in mock_detections:
+        upscaled.append((text, cx * 4.0, cy * 4.0, w * 4.0, h * 4.0))
+        
+    from unittest.mock import patch
+    with patch("analyzer.paddle_ocr_positions", return_value=upscaled):
+        with patch("analyzer.HAS_PADDLE", True):
+            import numpy as np
+            mock_img = np.zeros((255, 250, 3), dtype=np.uint8)
+            bids = a.extract_bids(mock_img)
+            expected = [
+                ("W", "PASS"),
+                ("N", "1H"),
+                ("E", "PASS"),
+                ("S", "1S"),
+                ("W", "PASS"),
+            ]
+            assert bids == expected, f"Expected {expected}, got {bids}"
+
+
 def main():
     test_clean_header_text_exact()
     test_clean_header_text_case_insensitive()
@@ -146,6 +182,7 @@ def main():
     test_standardize_bid_symbols()
     test_standardize_bid_invalid()
     test_standardize_bid_empty()
+    test_stop_at_question_mark()
     print("\nALL analyzer unit tests passed!")
 
 
