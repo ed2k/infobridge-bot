@@ -166,6 +166,22 @@ def test_stop_at_question_mark():
             assert bids == expected, f"Expected {expected}, got {bids}"
 
 
+def test_correct_bid_sequence():
+    a = make_analyzer()
+    # Test correction of same-color suits (Spade vs Club, Heart vs Diamond) when illegal progression is detected
+    input_bids = [("W", "1C"), ("N", "1C")]
+    corrected = a.correct_bid_sequence(input_bids)
+    assert corrected == [("W", "1C"), ("N", "1S")]
+    
+    input_bids_2 = [("W", "1H"), ("N", "1D")]
+    corrected_2 = a.correct_bid_sequence(input_bids_2)
+    assert corrected_2 == [("W", "1H"), ("N", "1D")]
+    
+    input_bids_3 = [("W", "1D"), ("N", "1D")]
+    corrected_3 = a.correct_bid_sequence(input_bids_3)
+    assert corrected_3 == [("W", "1D"), ("N", "1H")]
+
+
 def main():
     test_clean_header_text_exact()
     test_clean_header_text_case_insensitive()
@@ -183,6 +199,7 @@ def main():
     test_standardize_bid_invalid()
     test_standardize_bid_empty()
     test_stop_at_question_mark()
+    test_correct_bid_sequence()
     print("\nALL analyzer unit tests passed!")
 
 

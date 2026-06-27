@@ -129,8 +129,71 @@ class BridgeAnalyzer:
         except Exception:
             pass
         results = self._extract_bids_structured(bidding_img)
+        results = self.correct_bid_sequence(results)
         print(f"🔍 [Bid Detection] Extracted bids: {results}", flush=True)
         return results
+
+    def correct_bid_sequence(self, results):
+        """
+        Post-processes bid sequence to enforce strictly ascending level bids
+        and corrects same-color suit misclassifications (e.g. Spade/Club, Heart/Diamond).
+        """
+        def get_bid_value(bid_str):
+            if not bid_str or len(bid_str) < 2:
+                return None
+            level_char = bid_str[0]
+            if level_char not in "1234567":
+                return None
+            level = int(level_char)
+            suit = bid_str[1:].upper()
+            suit_ranks = {"C": 0, "D": 1, "H": 2, "S": 3, "NT": 4}
+            if suit not in suit_ranks:
+                return None
+            return level * 5 + suit_ranks[suit]
+
+        corrected_results = []
+        prev_level_bid = None
+
+        for item in results:
+            is_dict = isinstance(item, dict)
+            bid_str = item["bid"] if is_dict else item[1]
+            direction = item["direction"] if is_dict else item[0]
+            
+            val = get_bid_value(bid_str)
+            if val is not None:
+                if prev_level_bid is not None:
+                    prev_val = get_bid_value(prev_level_bid)
+                    if val <= prev_val:
+                        # Attempt same-color suit correction
+                        level = int(bid_str[0])
+                        suit = bid_str[1:].upper()
+                        corrected = False
+                        
+                        if suit == "C":
+                            test_val = get_bid_value(f"{level}S")
+                            if test_val > prev_val:
+                                bid_str = f"{level}S"
+                                val = test_val
+                                corrected = True
+                        elif suit == "D":
+                            test_val = get_bid_value(f"{level}H")
+                            if test_val > prev_val:
+                                bid_str = f"{level}H"
+                                val = test_val
+                                corrected = True
+                                
+                        if corrected:
+                            print(f"🔧 Corrected illegal bid from OCR/template mismatch: {item['bid'] if is_dict else item[1]} -> {bid_str} (previous bid: {prev_level_bid})", flush=True)
+                            if is_dict:
+                                item["bid"] = bid_str
+                            else:
+                                item = (direction, bid_str)
+                
+                prev_level_bid = bid_str
+                
+            corrected_results.append(item)
+            
+        return corrected_results
 
     def calibrate_bid_input_roi(self, bidding_img, fx=4.0):
         """
@@ -310,7 +373,8 @@ class BridgeAnalyzer:
             return False
 
     def extract_bids_with_bboxes(self, bidding_img, fx=4.0):
-        return self._extract_bids_structured(bidding_img, fx=fx, with_bboxes=True)
+        results = self._extract_bids_structured(bidding_img, fx=fx, with_bboxes=True)
+        return self.correct_bid_sequence(results)
 
     def extract_bidding_hint(self, hint_img, fx=4.0):
         if HAS_PADDLE:
