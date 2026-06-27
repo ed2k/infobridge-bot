@@ -361,6 +361,8 @@ def detect_dummy_hands(img, analyzer, initial_dummy_hands=None, played_cards=Non
                 if pbn not in played_set:
                     remaining_dummy[side].append(card)
 
+    has_any_dummy = any(remaining_dummy[s] for s in ["West", "North", "East"])
+
     # Populate detected_cards directly for sides where we already have remembered cards
     for side in ["West", "North", "East"]:
         if remaining_dummy[side]:
@@ -374,8 +376,8 @@ def detect_dummy_hands(img, analyzer, initial_dummy_hands=None, played_cards=Non
                     "bbox": card.get("bbox", {"x": 0, "y": 0, "w": 0, "h": 0})
                 })
 
-    # 1. North dummy detection path (only run if not already detected/cached)
-    if not remaining_dummy["North"] and h_img >= 340:
+    # 1. North dummy detection path (only run if no dummy has been detected/cached)
+    if not has_any_dummy and h_img >= 340:
         if w_img > 600:
             left_x = w_img // 2 - 250
             right_x = w_img // 2 + 250
@@ -396,6 +398,8 @@ def detect_dummy_hands(img, analyzer, initial_dummy_hands=None, played_cards=Non
             
             if white_ratio >= 0.15:
                 north_cards = analyzer.extract_hand_cards(dummy_strip)
+                if north_cards:
+                    has_any_dummy = True
                 for card in north_cards:
                     if card.get("rank") and card.get("suit"):
                         bbox = card.get("bbox", {})
@@ -428,12 +432,12 @@ def detect_dummy_hands(img, analyzer, initial_dummy_hands=None, played_cards=Non
                     analyzer.rank_templates[r] = cv2.imread(p2, cv2.IMREAD_GRAYSCALE)
 
     crops = []
-    if h_img >= 600:
-        if w_img >= 110 and not remaining_dummy["West"]:
+    if h_img >= 600 and not has_any_dummy:
+        if w_img >= 110:
             west_crop = img[320:min(620, h_img), 0:110]
             crops.append(("West", west_crop, 0, 320))
             cv2.imwrite("debug/dummy_strip_west.png", west_crop)
-        if w_img >= 380 and not remaining_dummy["East"]:
+        if w_img >= 380:
             east_crop = img[320:min(620, h_img), 380:w_img]
             crops.append(("East", east_crop, 380, 320))
             cv2.imwrite("debug/dummy_strip_east.png", east_crop)
