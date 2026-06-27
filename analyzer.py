@@ -1020,7 +1020,7 @@ class BridgeAnalyzer:
                     break
 
         # Disambiguate 9 vs Q on red/black cards using bottom-half ink distribution
-        if rank_text in ("9", "Q"):
+        if is_hand and rank_text in ("9", "Q"):
             gray_rank = cv2.cvtColor(rank_crop, cv2.COLOR_BGR2GRAY)
             h, w = gray_rank.shape
             bottom = gray_rank[h//2:, :]
