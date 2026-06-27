@@ -1583,7 +1583,7 @@ class BridgeAnalyzer:
                     print(f"⚡ Fast Hand Detection Path (Fallback): peak count {len(peaks)} != expected {len(remaining_initial)}. Returning cached remaining cards.")
                 return remaining_initial
 
-        print(f"⏳ Running slow-path hand card extraction for {len(peaks)} cards (template matching/OCR)...", flush=True)
+        print(f"Counting hand cards: detected {len(peaks)} cards", flush=True)
         detected_cards = []
         card_crops_list = []
 
@@ -1673,6 +1673,7 @@ class BridgeAnalyzer:
         # Try global OCR on the cropped (full-res) hand strip for ranks (more accurate than per-card)
         best_ranks = None
         if len(detected_cards) >= 10:
+            print(f"⏳ Running slow-path hand card OCR for {len(detected_cards)} cards...", flush=True)
             try:
                 if HAS_PADDLE:
                     paddle_text = paddle_ocr_text(hand_img_cropped, min_confidence=0.3)

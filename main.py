@@ -359,41 +359,21 @@ def detect_dummy_hands(img, analyzer, initial_dummy_hands=None, played_cards=Non
                 if pbn not in played_set:
                     remaining_dummy[side].append(card)
 
-    # 1. North dummy: Same layout as player hand (one row of cards)
-    # The dummy card strip is at y=240..340 in the UI
-    # Fast path: use remembered cards when available
-    if remaining_dummy["North"] and h_img >= 340 and w_img > 600:
-        left_x = w_img // 2 - 250
-        right_x = w_img // 2 + 250
-        dummy_strip = img[240:340, left_x:right_x]
-        offset_x = left_x
-        try:
-            north_cards = analyzer.extract_hand_cards(
-                dummy_strip, 
-                initial_hand=initial_dummy_hands.get("North") if initial_dummy_hands else None, 
-                played_cards=played_cards
-            )
-            for card in north_cards:
-                if card.get("rank") and card.get("suit"):
-                    bbox = card.get("bbox", {})
-                    detected_cards.append({
-                        "rank": card["rank"],
-                        "suit": card["suit"],
-                        "cx": offset_x + bbox.get("x", 0) + bbox.get("w", 0) // 2,
-                        "cy": 240 + bbox.get("y", 0) + bbox.get("h", 0) // 2,
-                        "side": "North",
-                        "bbox": {
-                            "x": bbox.get("x", 0),
-                            "y": bbox.get("y", 0) + 240,
-                            "w": bbox.get("w", 0),
-                            "h": bbox.get("h", 0)
-                        }
-                    })
-        except Exception:
-            pass
-    
-    # Normal detection path for North dummy (also serves as fallback)
-    if not any(c.get("side") == "North" for c in detected_cards) and h_img >= 340:
+    # Populate detected_cards directly for sides where we already have remembered cards
+    for side in ["West", "North", "East"]:
+        if remaining_dummy[side]:
+            for card in remaining_dummy[side]:
+                detected_cards.append({
+                    "rank": card["rank"],
+                    "suit": card["suit"],
+                    "cx": card.get("cx", 0),
+                    "cy": card.get("cy", 0),
+                    "side": side,
+                    "bbox": card.get("bbox", {"x": 0, "y": 0, "w": 0, "h": 0})
+                })
+
+    # 1. North dummy detection path (only run if not already detected/cached)
+    if not remaining_dummy["North"] and h_img >= 340:
         if w_img > 600:
             left_x = w_img // 2 - 250
             right_x = w_img // 2 + 250
@@ -432,20 +412,6 @@ def detect_dummy_hands(img, analyzer, initial_dummy_hands=None, played_cards=Non
                         })
         except Exception:
             pass
-
-    # 2. East/West dummy: Template Matching
-    # Populate detected_cards directly for sides where we already have remembered cards
-    for side in ["West", "East"]:
-        if remaining_dummy[side]:
-            for card in remaining_dummy[side]:
-                detected_cards.append({
-                    "rank": card["rank"],
-                    "suit": card["suit"],
-                    "cx": card.get("cx", 0),
-                    "cy": card.get("cy", 0),
-                        "side": side,
-                        "bbox": card.get("bbox", {"x": 0, "y": 0, "w": 0, "h": 0})
-                    })
 
     if not hasattr(analyzer, 'rank_templates'):
         analyzer.rank_templates = {}
@@ -1108,18 +1074,16 @@ def run_monitoring(interval=2.0, verbose=False, save_play=False, output_dir="cap
             if not valid_hand:
                 detected_stage = "Waiting"
                 
-            # Check for new game transition (e.g. hand cards count increased beyond expected remaining)
-            played_count = len(tracker.get_all_played_cards())
-            played_south = len(tracker.get_played_cards_for_seat("S"))
-            expected_remaining = len(tracker.initial_hand) - played_south
-            is_new_game_transition = (
-                (played_count > 0 and len(valid_hand) > expected_remaining) or 
-                (current_stage == "Play" and detected_stage == "Bidding")
-            )
+            # Check for new game transition (when hand is already detected, the only trigger condition is expected remaining < 13 and hand card number == 13)
+            is_new_game_transition = False
+            if len(tracker.initial_hand) > 0:
+                played_south = len(tracker.get_played_cards_for_seat("S"))
+                expected_remaining = len(tracker.initial_hand) - played_south
+                is_new_game_transition = (expected_remaining < 13 and len(valid_hand) == 13)
             
             if is_new_game_transition:
                 print("\n✨ New game detected (transition/reset). Saving partial play and resetting state...", flush=True)
-                if tracker.initial_hand and played_count > 0:
+                if tracker.initial_hand and len(tracker.get_all_played_cards()) > 0:
                     if save_play:
                         pbn_path, json_path = tracker.save_to_files(output_dir)
                         if pbn_path:
@@ -1438,21 +1402,17 @@ def run_decision_loop(interval=2.0, dry_run=False, verbose=False, once=False, sa
                 if delta.region_changed("ui", ui_img):
                     queue.put("ui", ui_img)
                     
-            # Check for new game transition (e.g. hand cards count increased beyond expected remaining)
+            # Check for new game transition (when hand is already detected, the only trigger condition is expected remaining < 13 and hand card number == 13)
             # Skip when hand just decreased — that's a normal play, not a new game
             is_new_game_transition = False
-            if not hand_decreased:
-                played_count = len(tracker.get_all_played_cards())
+            if not hand_decreased and len(tracker.initial_hand) > 0:
                 played_south = len(tracker.get_played_cards_for_seat("S"))
                 expected_remaining = len(tracker.initial_hand) - played_south
-                is_new_game_transition = (
-                    (played_count > 0 and len(valid_hand) > expected_remaining) or 
-                    (current_stage == "Play" and detected_stage == "Bidding")
-                )
+                is_new_game_transition = (expected_remaining < 13 and len(valid_hand) == 13)
             
             if is_new_game_transition:
                 print("\n✨ New game detected (transition/reset). Saving partial play and resetting state...", flush=True)
-                if tracker.initial_hand and played_count > 0:
+                if tracker.initial_hand and len(tracker.get_all_played_cards()) > 0:
                     if save_play:
                         pbn_path, json_path = tracker.save_to_files(output_dir)
                         if pbn_path:
