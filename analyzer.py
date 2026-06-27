@@ -52,8 +52,13 @@ class BridgeAnalyzer:
         return thresh
 
     def clean_header_text(self, text):
+        if re.match(r'^\s*\d', text):
+            return None
         cleaned = re.sub(r'[^a-zA-Z]', '', text).upper()
         if not cleaned:
+            return None
+
+        if cleaned in ("NT", "PASS", "DBL", "RDBL"):
             return None
 
         if cleaned in self._DIRECTION_MAP:
@@ -117,7 +122,15 @@ class BridgeAnalyzer:
         return b_clean
 
     def extract_bids(self, bidding_img):
-        return self._extract_bids_structured(bidding_img)
+        try:
+            import os
+            os.makedirs("debug", exist_ok=True)
+            cv2.imwrite("debug/bidding_area.png", bidding_img)
+        except Exception:
+            pass
+        results = self._extract_bids_structured(bidding_img)
+        print(f"🔍 [Bid Detection] Extracted bids: {results}", flush=True)
+        return results
 
     def extract_bids_with_bboxes(self, bidding_img, fx=4.0):
         return self._extract_bids_structured(bidding_img, fx=fx, with_bboxes=True)
@@ -189,6 +202,8 @@ class BridgeAnalyzer:
                 "height": int(row[height_idx]),
                 "text": text,
                 "center_x": int(row[left_idx]) + int(row[width_idx]) // 2,
+                "cy": (int(row[top_idx]) + int(row[height_idx]) // 2) / fx,
+                "cx": (int(row[left_idx]) + int(row[width_idx]) // 2) / fx,
             })
 
         if not words:
@@ -266,18 +281,55 @@ class BridgeAnalyzer:
                 w["direction"] = col_dirs[closest_idx]
                 bid_words.append(w)
 
-        bid_words.sort(key=lambda w: w["top"])
+        bid_words.sort(key=lambda w: w["cy"])
 
         word_rows = []
         if bid_words:
             current_row = [bid_words[0]]
             for w in bid_words[1:]:
-                if w["top"] - current_row[-1]["top"] < 30:
+                if abs(w["cy"] - current_row[-1]["cy"]) < (24.0 / fx):
                     current_row.append(w)
                 else:
                     word_rows.append(current_row)
                     current_row = [w]
             word_rows.append(current_row)
+
+        # Filter out rows that represent the bid input area
+        input_area_y = None
+        for row in word_rows:
+            is_btn_row = False
+            single_digits = [w for w in row if w["text"].strip() in "1234567"]
+            if len(single_digits) >= 3:
+                is_btn_row = True
+            else:
+                for w in row:
+                    cleaned = re.sub(r'\s+', '', w["text"])
+                    if len(cleaned) >= 4 and all(c in "1234567" for c in cleaned):
+                        is_btn_row = True
+                        break
+                    if any(seq in cleaned for seq in ["1234567", "12345", "23456", "34567"]):
+                        is_btn_row = True
+                        break
+                    if cleaned in "1234567" and w["cy"] > bidding_img.shape[0] * 0.55:
+                        is_btn_row = True
+                        break
+            if is_btn_row:
+                row_min_cy = min(w["cy"] for w in row)
+                if input_area_y is None or row_min_cy < input_area_y:
+                    input_area_y = row_min_cy
+
+        valid_rows = []
+        for row in word_rows:
+            row_cy = sum(w["cy"] for w in row) / len(row)
+            if input_area_y is not None and row_cy >= input_area_y - 2:
+                if self.verbose:
+                    print(f"Skipping input area row at cy={row_cy:.1f} >= input_area_y={input_area_y:.1f}", flush=True)
+                continue
+            if row_cy > bidding_img.shape[0] * 0.80:
+                if self.verbose:
+                    print(f"Skipping bottom row at cy={row_cy:.1f} (bottom threshold)", flush=True)
+                continue
+            valid_rows.append(row)
 
         bid_pattern = re.compile(
             r'^(PASS|PAS|PA|PASSED|DBL|DOUBLE|RDBL|REDOUBLE|X|XX|'
@@ -286,7 +338,7 @@ class BridgeAnalyzer:
         )
 
         results = []
-        for row in word_rows:
+        for row in valid_rows:
             col_groups = {}
             for w in row:
                 col_groups.setdefault(w["col_idx"], []).append(w)
@@ -304,7 +356,9 @@ class BridgeAnalyzer:
                 max_bottom = max(w["top"] + w["height"] for w in g_words)
 
                 # Resolve suit symbol images in level bids (e.g. 1H, 1S)
-                if len(std_text) >= 2 and std_text[0] in "1234567" and std_text[1:] != "NT":
+                if len(std_text) >= 1 and std_text[0] in "1234567" and std_text[1:] != "NT":
+                    has_valid_ocr_suit = (len(std_text) == 2 and std_text[1] in ("S", "H", "D", "C"))
+                    
                     x1 = int(min_left / fx)
                     y1 = int(min_top_w / fx)
                     x2 = int(max_right / fx)
@@ -319,18 +373,33 @@ class BridgeAnalyzer:
                         suit_w = int(word_crop.shape[1] * 0.6)
                         if suit_w > 0:
                             suit_crop = word_crop[:, word_crop.shape[1] - suit_w:]
-                            suit = self.classify_suit_template_matching(suit_crop)
-                            if not suit:
-                                suit = self.classify_suit_by_color_shape(suit_crop)
-                                
-                            if suit in ("spade", "heart", "diamond", "club"):
+                            suit, score = self.classify_suit_template_matching(suit_crop, return_score=True)
+                            
+                            should_override = False
+                            resolved_suit = None
+                            
+                            if has_valid_ocr_suit:
+                                if suit and score > 0.60:
+                                    should_override = True
+                                    resolved_suit = suit
+                            else:
+                                if suit:
+                                    should_override = True
+                                    resolved_suit = suit
+                                else:
+                                    fallback_suit = self.classify_suit_by_color_shape(suit_crop)
+                                    if fallback_suit in ("spade", "heart", "diamond", "club"):
+                                        should_override = True
+                                        resolved_suit = fallback_suit
+                                        
+                            if should_override and resolved_suit in ("spade", "heart", "diamond", "club"):
                                 suit_map = {
                                     "spade": "S",
                                     "heart": "H",
                                     "diamond": "D",
                                     "club": "C"
                                 }
-                                std_text = f"{std_text[0]}{suit_map[suit]}"
+                                std_text = f"{std_text[0]}{suit_map[resolved_suit]}"
 
                 # Disambiguate DBL (Red) and RDBL (Blue) based on color
                 if std_text in ("DBL", "RDBL"):
@@ -362,6 +431,7 @@ class BridgeAnalyzer:
                                 std_text = "DBL"
                             elif std_text == "DBL" and blue_pixels > red_pixels * 1.5:
                                 std_text = "RDBL"
+                print(f"  [Tesseract Bid OCR] Raw combined: '{combined_text}' -> Standardized: '{std_text}'", flush=True)
 
                 if bid_pattern.match(std_text):
                     direction = col_dirs[col_idx]
@@ -391,26 +461,45 @@ class BridgeAnalyzer:
 
     def _extract_bids_paddle(self, bidding_img, fx=4.0, with_bboxes=False):
         """Extract bids using PaddleOCR for text detection."""
-        detections = paddle_ocr_positions(bidding_img, min_confidence=0.3)
+        # Preprocess and upscale image by fx (default 4.0) for high OCR recall
+        processed = self.preprocess_for_ocr(bidding_img, fx=fx, thresh_val=None)
+        processed_bgr = cv2.cvtColor(processed, cv2.COLOR_GRAY2BGR)
+
+        detections = paddle_ocr_positions(processed_bgr, min_confidence=0.3)
 
         if not detections:
             return []
 
         img_h = bidding_img.shape[0]
 
-        header_candidates = []
-        bid_candidates = []
-
+        # Split multi-word detections (space-separated) to handle merged columns
+        split_detections = []
         for text, cx, cy, w, h in detections:
             text_clean = text.strip().upper()
             if not text_clean:
                 continue
+            parts = [p for p in text_clean.split() if p.strip()]
+            if len(parts) > 1:
+                n_parts = len(parts)
+                w_part = w / n_parts
+                x_start = cx - w / 2
+                for i, part in enumerate(parts):
+                    part_cx = x_start + w_part * (i + 0.5)
+                    split_detections.append((part, part_cx, cy, w_part, h))
+            else:
+                split_detections.append((text_clean, cx, cy, w, h))
 
+        header_candidates = []
+        bid_candidates = []
+
+        for text_clean, cx, cy, w, h in split_detections:
             dir_key = self.clean_header_text(text_clean)
-            if dir_key and cy < img_h * 0.35:
-                header_candidates.append((cx, cy, dir_key))
-            elif cy >= img_h * 0.25:
-                bid_candidates.append((cx, cy, text_clean, w, h))
+            # cy/fx maps back to original image space
+            if dir_key and (cy / fx) < max(80.0, img_h * 0.35):
+                header_candidates.append((cx / fx, cy / fx, dir_key))
+            
+            # Store all words as potential bids; we filter out header row later based on y-coordinate
+            bid_candidates.append((cx / fx, cy / fx, text_clean, w / fx, h / fx))
 
         if len(header_candidates) < 2:
             return []
@@ -444,8 +533,14 @@ class BridgeAnalyzer:
         col_centers = [best_c0 + idx * col_width for idx in range(4)]
         col_dirs = best_rotation
 
+        max_header_top = max(cy for cx, cy, direction in header_candidates)
+
         candidate_words = []
         for cx, cy, text, w, h in bid_candidates:
+            # Skip words that are part of or above the header row
+            if cy <= max_header_top + 2.5:
+                continue
+
             closest_idx = 0
             min_dist = float('inf')
             for idx, center in enumerate(col_centers):
@@ -457,7 +552,9 @@ class BridgeAnalyzer:
             std_text = self.standardize_bid(text)
 
             # Resolve suit symbol images in level bids (e.g. 1H, 1S)
-            if len(std_text) >= 2 and std_text[0] in "1234567" and std_text[1:] != "NT":
+            if len(std_text) >= 1 and std_text[0] in "1234567" and std_text[1:] != "NT":
+                has_valid_ocr_suit = (len(std_text) == 2 and std_text[1] in ("S", "H", "D", "C"))
+                
                 x1 = int(cx - w / 2)
                 y1 = int(cy - h / 2)
                 x2 = int(cx + w / 2)
@@ -472,17 +569,34 @@ class BridgeAnalyzer:
                     suit_w = int(word_crop.shape[1] * 0.6)
                     if suit_w > 0:
                         suit_crop = word_crop[:, word_crop.shape[1] - suit_w:]
-                        suit = self.classify_suit_template_matching(suit_crop)
-                        if not suit:
-                            suit = self.classify_suit_by_color_shape(suit_crop)
-                        if suit in ("spade", "heart", "diamond", "club"):
+                        suit, score = self.classify_suit_template_matching(suit_crop, return_score=True)
+                        
+                        should_override = False
+                        resolved_suit = None
+                        
+                        if has_valid_ocr_suit:
+                            if suit and score > 0.60:
+                                should_override = True
+                                resolved_suit = suit
+                        else:
+                            if suit:
+                                should_override = True
+                                resolved_suit = suit
+                            else:
+                                fallback_suit = self.classify_suit_by_color_shape(suit_crop)
+                                if fallback_suit in ("spade", "heart", "diamond", "club"):
+                                    should_override = True
+                                    resolved_suit = fallback_suit
+                                    
+                        if should_override and resolved_suit in ("spade", "heart", "diamond", "club"):
                             suit_map = {
                                 "spade": "S",
                                 "heart": "H",
                                 "diamond": "D",
                                 "club": "C"
                             }
-                            std_text = f"{std_text[0]}{suit_map[suit]}"
+                            std_text = f"{std_text[0]}{suit_map[resolved_suit]}"
+            print(f"  [PaddleOCR Bid OCR] Raw text: '{text}' -> Standardized: '{std_text}'", flush=True)
 
             bid_pattern = re.compile(
                 r'^(PASS|PAS|PA|PASSED|DBL|DOUBLE|RDBL|REDOUBLE|X|XX|'
@@ -508,15 +622,52 @@ class BridgeAnalyzer:
         if candidate_words:
             current_row = [candidate_words[0]]
             for w in candidate_words[1:]:
-                if abs(w["cy"] - current_row[-1]["cy"]) < 30:
+                if abs(w["cy"] - current_row[-1]["cy"]) < (24.0 / fx):
                     current_row.append(w)
                 else:
                     word_rows.append(current_row)
                     current_row = [w]
             word_rows.append(current_row)
 
-        results = []
+        # Filter out rows that represent the bid input area
+        input_area_y = None
         for row in word_rows:
+            is_btn_row = False
+            single_digits = [w for w in row if w["text"].strip() in "1234567"]
+            if len(single_digits) >= 3:
+                is_btn_row = True
+            else:
+                for w in row:
+                    cleaned = re.sub(r'\s+', '', w["text"])
+                    if len(cleaned) >= 4 and all(c in "1234567" for c in cleaned):
+                        is_btn_row = True
+                        break
+                    if any(seq in cleaned for seq in ["1234567", "12345", "23456", "34567"]):
+                        is_btn_row = True
+                        break
+                    if cleaned in "1234567" and w["cy"] > bidding_img.shape[0] * 0.55:
+                        is_btn_row = True
+                        break
+            if is_btn_row:
+                row_min_cy = min(w["cy"] for w in row)
+                if input_area_y is None or row_min_cy < input_area_y:
+                    input_area_y = row_min_cy
+
+        valid_rows = []
+        for row in word_rows:
+            row_cy = sum(w["cy"] for w in row) / len(row)
+            if input_area_y is not None and row_cy >= input_area_y - 2:
+                if self.verbose:
+                    print(f"Skipping input area row at cy={row_cy:.1f} >= input_area_y={input_area_y:.1f}", flush=True)
+                continue
+            if row_cy > bidding_img.shape[0] * 0.80:
+                if self.verbose:
+                    print(f"Skipping bottom row at cy={row_cy:.1f} (bottom threshold)", flush=True)
+                continue
+            valid_rows.append(row)
+
+        results = []
+        for row in valid_rows:
             col_groups = {}
             for w in row:
                 col_groups.setdefault(w["col_idx"], []).append(w)
@@ -656,12 +807,14 @@ class BridgeAnalyzer:
             else:
                 return "club"
 
-    def classify_suit_template_matching(self, suit_img, is_hand=True):
+    def classify_suit_template_matching(self, suit_img, is_hand=True, return_score=False):
         """
         Classify suit using cv2.matchTemplate against loaded templates.
         Pre-filters candidate templates using color (red vs black) to eliminate cross-color errors.
         """
         if not self.suit_templates:
+            if return_score:
+                return None, -1.0
             return None
             
         # Determine color channel first (Red vs Black)
@@ -747,6 +900,12 @@ class BridgeAnalyzer:
             
         if self.verbose:
             print(f"Debug Match: {best_match} (score: {best_score:.3f}, is_red: {is_red})")
+            
+        if return_score:
+            if best_score > 0.35:
+                return best_match, best_score
+            return None, best_score
+            
         if best_score > 0.35:
             return best_match
         return None

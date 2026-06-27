@@ -106,10 +106,27 @@ def generate_synthetic():
     draw.rectangle([bx, by, bx+bw, by+bh], fill="#2e3138", outline="#4e525a", width=3)
     draw.text((bx+20, by+15), "BIDDING HISTORY", font=section_font, fill="#00ff00")
     draw.line([bx+10, by+40, bx+bw-10, by+40], fill="#4e525a", width=2)
-    draw.text((bx+30, by+55), "WEST    NORTH   EAST    SOUTH", font=table_font, fill="white")
-    draw.text((bx+30, by+90), "Pass    1NT     Pass    2C", font=table_font, fill="white")
-    draw.text((bx+30, by+120), "Pass    3NT     Pass    Pass", font=table_font, fill="white")
-    draw.text((bx+30, by+150), "DBL     Pass    Pass    Pass", font=table_font, fill="white")
+    # Draw headers individually at explicit offsets (N, E, S, W order)
+    draw.text((bx+30, by+55), "NORTH", font=table_font, fill="white")
+    draw.text((bx+110, by+55), "EAST", font=table_font, fill="white")
+    draw.text((bx+190, by+55), "SOUTH", font=table_font, fill="white")
+    draw.text((bx+270, by+55), "WEST", font=table_font, fill="white")
+
+    # Draw Row 1 bids (1S, Pass, 2C, Pass)
+    draw.text((bx+30, by+90), "1S", font=table_font, fill="white")
+    draw.text((bx+110, by+90), "Pass", font=table_font, fill="white")
+    draw.text((bx+190, by+90), "2C", font=table_font, fill="white")
+    draw.text((bx+270, by+90), "Pass", font=table_font, fill="white")
+
+    # Draw Row 2 bids (2H, Pass, 3NT, Pass)
+    draw.text((bx+30, by+120), "2H", font=table_font, fill="white")
+    draw.text((bx+110, by+120), "Pass", font=table_font, fill="white")
+    draw.text((bx+190, by+120), "3NT", font=table_font, fill="white")
+    draw.text((bx+270, by+120), "Pass", font=table_font, fill="white")
+
+    # Draw Row 3 bids (Pass, Pass, empty, empty)
+    draw.text((bx+30, by+150), "Pass", font=table_font, fill="white")
+    draw.text((bx+110, by+150), "Pass", font=table_font, fill="white")
 
     tx, ty, tw, th = 300, 250, 400, 300
     draw.rectangle([tx, ty, tx+tw, ty+th], fill="#163f24", outline="#226037", width=2)
