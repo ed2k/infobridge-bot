@@ -1055,10 +1055,24 @@ def run_monitoring(interval=2.0, verbose=False, save_play=False, output_dir="cap
         current_stage = None
         
         while True:
+            # Check if bidding has already ended from the snapshot state
+            snap_bids = state.get_snapshot()["bids"]
+            snap_flat_bids = [b[1] for b in snap_bids]
+            bidding_ended_cached = False
+            if snap_flat_bids:
+                consecutive_passes = 0
+                for b in reversed(snap_flat_bids):
+                    if b.upper() == "PASS":
+                        consecutive_passes += 1
+                    else:
+                        break
+                bidding_ended_cached = (consecutive_passes >= 3) or len(snap_flat_bids) >= 40
+
             # 1. Main Thread captures and delta checks
-            bidding_img = cap.capture_bidding()
-            if delta.region_changed("bidding", bidding_img):
-                queue.put("bidding", bidding_img)
+            if not bidding_ended_cached:
+                bidding_img = cap.capture_bidding()
+                if delta.region_changed("bidding", bidding_img):
+                    queue.put("bidding", bidding_img)
             
             trick_img = cap.capture_trick()
             if delta.region_changed("trick", trick_img):
@@ -1350,10 +1364,24 @@ def run_decision_loop(interval=2.0, dry_run=False, verbose=False, once=False, sa
         while True:
             current_time = time.time()
             
+            # Check if bidding has already ended from the snapshot state
+            snap_bids = state.get_snapshot()["bids"]
+            snap_flat_bids = [b[1] for b in snap_bids]
+            bidding_ended_cached = False
+            if snap_flat_bids:
+                consecutive_passes = 0
+                for b in reversed(snap_flat_bids):
+                    if b.upper() == "PASS":
+                        consecutive_passes += 1
+                    else:
+                        break
+                bidding_ended_cached = (consecutive_passes >= 3) or len(snap_flat_bids) >= 40
+
             # 1. Main Thread captures and delta checks
-            bidding_img = cap.capture_bidding()
-            if delta.region_changed("bidding", bidding_img):
-                queue.put("bidding", bidding_img)
+            if not bidding_ended_cached:
+                bidding_img = cap.capture_bidding()
+                if delta.region_changed("bidding", bidding_img):
+                    queue.put("bidding", bidding_img)
                 
             # Always capture and check delta to detect what changed
             hand_img = cap.capture_player_hand()
