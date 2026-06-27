@@ -129,7 +129,9 @@ class GameState:
         
     def update_bids(self, bids):
         with self.lock:
-            self.bids = bids
+            # Bidding sequence in bridge only grows; never overwrite with a shorter sequence
+            if len(bids) >= len(self.bids):
+                self.bids = bids
             
     def update_hand(self, hand, valid_hand):
         with self.lock:

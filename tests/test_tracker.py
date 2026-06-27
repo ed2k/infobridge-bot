@@ -161,12 +161,41 @@ def test_file_io():
 
     print("✅ File IO test passed.")
 
+
+def test_gamestate_bids_persistence():
+    print("Testing GameState Bids Persistence...")
+    from main import GameState
+    state = GameState()
+    
+    # Initial state
+    assert state.bids == []
+    
+    # Valid initial update
+    state.update_bids([("N", "1C"), ("E", "PASS")])
+    assert state.bids == [("N", "1C"), ("E", "PASS")]
+    
+    # Shorter update should be rejected/ignored (not overwrite)
+    state.update_bids([("N", "1C")])
+    assert state.bids == [("N", "1C"), ("E", "PASS")]
+    
+    # Equal or longer update should be accepted
+    state.update_bids([("N", "1C"), ("E", "PASS"), ("S", "1S")])
+    assert state.bids == [("N", "1C"), ("E", "PASS"), ("S", "1S")]
+    
+    # reset() should clear the sequence for a new round
+    state.reset()
+    assert state.bids == []
+    print("✅ GameState Bids Persistence test passed.")
+
+
 def main():
     test_hand_serialization()
     test_seat_classification()
     test_trick_transitions()
     test_file_io()
+    test_gamestate_bids_persistence()
     print("\n🎉 ALL GameTracker tests passed successfully!")
+
 
 if __name__ == "__main__":
     main()
