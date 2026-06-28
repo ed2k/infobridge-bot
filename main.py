@@ -337,6 +337,76 @@ def _nms_boxes(boxes, threshold=0.3):
         
     return pick
 
+def enforce_descending_dummy_hand(cards):
+    """
+    Enforces strictly decreasing rank order and uniqueness (no duplicates)
+    for each suit group in a dummy hand.
+    """
+    if not cards:
+        return cards
+        
+    suit_groups = {}
+    for c in cards:
+        suit_groups.setdefault(c["suit"], []).append(c)
+        
+    rank_vals = {"A": 14, "K": 13, "Q": 12, "J": 11, "T": 10, "9": 9, "8": 8, "7": 7, "6": 6, "5": 5, "4": 4, "3": 3, "2": 2}
+    inv_vals = {v: k for k, v in rank_vals.items()}
+    
+    corrected_cards = []
+    
+    for suit, group in suit_groups.items():
+        # Sort group horizontally (left to right by cx)
+        group.sort(key=lambda x: x["cx"])
+        
+        D = [rank_vals.get(c["rank"], 2) for c in group]
+        n = len(D)
+        
+        memo = {}
+        def solve(idx, prev_val):
+            if idx == n:
+                return (0, 0, [])
+            state = (idx, prev_val)
+            if state in memo:
+                return memo[state]
+                
+            best_matches = -1
+            best_diff = float('inf')
+            best_seq = []
+            
+            min_allowed = 2 + (n - 1 - idx)
+            max_allowed = prev_val - 1
+            
+            for v in range(min_allowed, max_allowed + 1):
+                sub_matches, sub_diff, sub_seq = solve(idx + 1, v)
+                if sub_matches != -1:
+                    is_match = (v == D[idx])
+                    current_matches = sub_matches + (1 if is_match else 0)
+                    current_diff = sub_diff + abs(v - D[idx])
+                    
+                    if (current_matches > best_matches) or (current_matches == best_matches and current_diff < best_diff):
+                        best_matches = current_matches
+                        best_diff = current_diff
+                        best_seq = [v] + sub_seq
+                        
+            res = (best_matches, best_diff, best_seq)
+            memo[state] = res
+            return res
+            
+        _, _, optimal_seq = solve(0, 15)
+        
+        if len(optimal_seq) == n:
+            for idx, v in enumerate(optimal_seq):
+                old_rank = group[idx]["rank"]
+                new_rank = inv_vals[v]
+                if old_rank != new_rank:
+                    print(f"🔧 Corrected dummy card rank violation: {old_rank} -> {new_rank} in suit {suit}", flush=True)
+                    group[idx]["rank"] = new_rank
+                
+        corrected_cards.extend(group)
+        
+    return corrected_cards
+
+
 def detect_dummy_hands(img, analyzer, initial_dummy_hands=None, played_cards=None):
     """
     Detects dummy hands on all sides (West, East, North) in the full UI capture image.
@@ -345,6 +415,10 @@ def detect_dummy_hands(img, analyzer, initial_dummy_hands=None, played_cards=Non
     """
     if img is None:
         return {"West": [], "North": [], "East": []}
+        
+    # Ensure all 13 rank templates are loaded for E/W template matching
+    for r in ["A", "K", "Q", "J", "T", "9", "8", "7", "6", "5", "4", "3", "2"]:
+        analyzer.load_rank_template(r)
         
     h_img, w_img = img.shape[:2]
     detected_cards = []
@@ -735,6 +809,86 @@ def detect_dummy_hands(img, analyzer, initial_dummy_hands=None, played_cards=Non
                                 if best_ocr_rank and min_dx < 25:
                                     cand["r_label"] = best_ocr_rank
                                 
+            # Resolve/correct ranks in the row using template score DP solver to enforce strict descending order
+            if row:
+                ranks_list = ["A", "K", "Q", "J", "T", "9", "8", "7", "6", "5", "4", "3", "2"]
+                row_candidates = []
+                for cand in row:
+                    rx, ry = cand["rx"], cand["ry"]
+                    rw, rh = cand["rw"], cand["rh"]
+                    
+                    ry_start = max(0, ry - 2)
+                    ry_end = min(gray_crop.shape[0], ry + rh + 2)
+                    rx_start = max(0, rx - 2)
+                    rx_end = min(gray_crop.shape[1], rx + rw + 2)
+                    rank_patch = gray_crop[ry_start:ry_end, rx_start:rx_end]
+                    
+                    rank_scores = {}
+                    for r_name in ranks_list:
+                        tpl = analyzer.rank_templates.get(r_name)
+                        if tpl is not None:
+                            h_p, w_p = rank_patch.shape
+                            h_t, w_t = tpl.shape
+                            if h_p < h_t or w_p < w_t:
+                                pad_y = max(0, h_t - h_p)
+                                pad_x = max(0, w_t - w_p)
+                                rp_padded = cv2.copyMakeBorder(rank_patch, 0, pad_y, 0, pad_x, cv2.BORDER_CONSTANT, value=255)
+                            else:
+                                rp_padded = rank_patch
+                            res_patch = cv2.matchTemplate(rp_padded, tpl, cv2.TM_CCOEFF_NORMED)
+                            _, max_val, _, _ = cv2.minMaxLoc(res_patch)
+                            rank_scores[r_name] = max_val
+                        else:
+                            rank_scores[r_name] = 0.0
+                            
+                    # Boost the currently assigned label
+                    if cand.get("r_label") in rank_scores:
+                        rank_scores[cand["r_label"]] += 0.50
+                    row_candidates.append(rank_scores)
+                    
+                rank_vals = {"A": 14, "K": 13, "Q": 12, "J": 11, "T": 10, "9": 9, "8": 8, "7": 7, "6": 6, "5": 5, "4": 4, "3": 3, "2": 2}
+                inv_vals = {v: k for k, v in rank_vals.items()}
+                n_cands = len(row)
+                memo = {}
+                
+                def solve_dp(cand_idx, prev_val):
+                    if cand_idx == n_cands:
+                        return (0.0, [])
+                    state = (cand_idx, prev_val)
+                    if state in memo:
+                        return memo[state]
+                        
+                    best_s = -float('inf')
+                    best_seq = []
+                    
+                    min_allowed = 2 + (n_cands - 1 - cand_idx)
+                    max_allowed = prev_val - 1
+                    
+                    for v in range(min_allowed, max_allowed + 1):
+                        r_char = inv_vals[v]
+                        tpl_score = row_candidates[cand_idx].get(r_char, 0.0)
+                        score_weight = max(0.0, tpl_score)
+                        
+                        sub_score, sub_seq = solve_dp(cand_idx + 1, v)
+                        if sub_score != -float('inf'):
+                            total = score_weight + sub_score
+                            if total > best_s:
+                                best_s = total
+                                best_seq = [v] + sub_seq
+                                
+                    res = (best_s, best_seq)
+                    memo[state] = res
+                    return res
+                    
+                _, optimal_seq = solve_dp(0, 15)
+                if len(optimal_seq) == n_cands:
+                    for idx, v in enumerate(optimal_seq):
+                        old_label = row[idx]["r_label"]
+                        new_label = inv_vals[v]
+                        if old_label != new_label:
+                            print(f"🔧 East/West dummy sequence layout solver corrected rank: {old_label} -> {new_label} in {side} dummy {row_suit}", flush=True)
+                            row[idx]["r_label"] = new_label
+                                
             # Assign suit to each card in the row and add to detected_cards
             for cand in row:
                 cx = cand["rx"] + cand["rw"] // 2 + offset_x
@@ -784,6 +938,10 @@ def detect_dummy_hands(img, analyzer, initial_dummy_hands=None, played_cards=Non
                 west_dummy.append(card)
             elif cx >= 0.78 * w_img and 0.22 * h_img <= cy < 0.75 * h_img:
                 east_dummy.append(card)
+                
+    west_dummy = enforce_descending_dummy_hand(west_dummy)
+    east_dummy = enforce_descending_dummy_hand(east_dummy)
+    north_dummy = enforce_descending_dummy_hand(north_dummy)
                 
     # Single-dummy-side heuristic: only one side can be the dummy hand at any given time.
     # Keep only the detections for the side with the maximum card count, clearing the others.
