@@ -853,7 +853,8 @@ class BridgeAnalyzer:
             )
 
             is_q = (std_text == "?")
-            if is_q or bid_pattern.match(std_text):
+            is_your_turn = (std_text in ("YOUR", "TURN"))
+            if is_q or is_your_turn or bid_pattern.match(std_text):
                 direction = col_dirs[closest_idx]
                 bbox = {"x": cx - w/2, "y": cy - h/2, "w": w, "h": h}
                 candidate_words.append({
@@ -928,7 +929,7 @@ class BridgeAnalyzer:
                 g_words = col_groups[col_idx]
                 g_words.sort(key=lambda w: w["cx"])
                 combined_text = " ".join(w["text"] for w in g_words)
-                if "?" in combined_text:
+                if "?" in combined_text or "YOUR" in combined_text or "TURN" in combined_text:
                     stopped = True
                     break
                 std_text = self.standardize_bid(combined_text)

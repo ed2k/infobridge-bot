@@ -529,7 +529,7 @@ def detect_dummy_hands(img, analyzer, initial_dummy_hands=None, played_cards=Non
         white_pixels = np.sum((hsv_crop[:,:,1] < 30) & (hsv_crop[:,:,2] > 200))
         white_ratio = white_pixels / (crop.shape[0] * crop.shape[1])
         
-        if white_ratio < 0.15:
+        if white_ratio < 0.10:
             continue
             
         gray_crop = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
