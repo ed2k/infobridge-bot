@@ -49,6 +49,7 @@ class RegionDeltaDetector:
         self.change_threshold = change_threshold
         self.min_change_pct = min_change_pct
         self._prev_gray = {}
+        self.counter = 0
 
     def _to_gray(self, img):
         if img is None:
@@ -84,23 +85,34 @@ class RegionDeltaDetector:
         prev = self._prev_gray.get(key)
         self._prev_gray[key] = gray.copy()
 
+        has_changed = False
         if prev is None:
-            return True
+            has_changed = True
+        elif prev.shape != gray.shape:
+            has_changed = True
+        else:
+            diff = cv2.absdiff(prev, gray)
+            changed_pixels = np.sum(diff > self.change_threshold)
+            total_pixels = diff.size
+            change_pct = (changed_pixels / total_pixels) * 100
+            has_changed = change_pct >= self.min_change_pct
 
-        if prev.shape != gray.shape:
-            return True
+        if has_changed:
+            self.counter += 1
+            try:
+                import os
+                os.makedirs("debug", exist_ok=True)
+                cv2.imwrite(f"debug/delta_{self.counter:03d}_{key}.png", img)
+            except Exception:
+                pass
 
-        diff = cv2.absdiff(prev, gray)
-        changed_pixels = np.sum(diff > self.change_threshold)
-        total_pixels = diff.size
-        change_pct = (changed_pixels / total_pixels) * 100
-
-        return change_pct >= self.min_change_pct
+        return has_changed
 
     def reset(self, key=None):
         """Clear cached images. If key is None, clear all."""
         if key is None:
             self._prev_gray.clear()
+            self.counter = 0
         else:
             self._prev_gray.pop(key, None)
 
