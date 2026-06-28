@@ -799,6 +799,9 @@ class BridgeAnalyzer:
                 x1 = int(cx - w / 2)
                 y1 = int(cy - h / 2)
                 x2 = int(cx + w / 2)
+                min_w = int(h * 1.2)
+                if (x2 - x1) < min_w:
+                    x2 = x1 + min_w
                 y2 = int(cy + h / 2)
                 x1 = max(0, min(x1, bidding_img.shape[1] - 1))
                 y1 = max(0, min(y1, bidding_img.shape[0] - 1))
@@ -810,7 +813,7 @@ class BridgeAnalyzer:
                     suit_w = int(word_crop.shape[1] * 0.6)
                     if suit_w > 0:
                         suit_crop = word_crop[:, word_crop.shape[1] - suit_w:]
-                        suit, score = self.classify_suit_template_matching(suit_crop, return_score=True)
+                        suit, score = self.classify_bid_suit(suit_crop, return_score=True)
                         
                         should_override = False
                         resolved_suit = None
@@ -1149,6 +1152,63 @@ class BridgeAnalyzer:
         if self.verbose:
             print(f"Debug Match: {best_match} (score: {best_score:.3f}, is_red: {is_red})")
             
+        if return_score:
+            if best_score > 0.35:
+                return best_match, best_score
+            return None, best_score
+            
+        if best_score > 0.35:
+            return best_match
+        return None
+
+    def classify_bid_suit(self, suit_crop, return_score=False):
+        """
+        Dedicated scale-invariant suit classification for bidding table crops.
+        Resizes the crop to match template scale for high-accuracy matching.
+        """
+        if not self.suit_templates:
+            if return_score:
+                return None, -1.0
+            return None
+
+        # Determine color channel first (Red vs Black)
+        hsv = cv2.cvtColor(suit_crop, cv2.COLOR_BGR2HSV)
+        lower_red1 = np.array([0, 50, 50])
+        upper_red1 = np.array([25, 255, 255])
+        lower_red2 = np.array([170, 50, 50])
+        upper_red2 = np.array([180, 255, 255])
+        
+        mask1 = cv2.inRange(hsv, lower_red1, upper_red1)
+        mask2 = cv2.inRange(hsv, lower_red2, upper_red2)
+        red_mask = mask1 + mask2
+        
+        red_ratio = np.sum(red_mask > 0) / (suit_crop.shape[0] * suit_crop.shape[1])
+        is_red = red_ratio > 0.015
+        
+        allowed_suits = ["heart", "diamond"] if is_red else ["spade", "club"]
+        
+        gray = cv2.cvtColor(suit_crop, cv2.COLOR_BGR2GRAY)
+        best_match = None
+        best_score = -1.0
+        
+        for suit in allowed_suits:
+            template = self.suit_templates.get(suit)
+            if template is None:
+                continue
+                
+            t_h, t_w = template.shape[:2]
+            g_h, g_w = gray.shape[:2]
+            
+            # For bidding crops, always resize the search gray crop to exactly match template scale (t_w, t_h)
+            gray_search = cv2.resize(gray, (t_w, t_h), interpolation=cv2.INTER_AREA if g_h > t_h else cv2.INTER_CUBIC)
+            
+            res = cv2.matchTemplate(gray_search, template, cv2.TM_CCOEFF_NORMED)
+            _, max_val, _, _ = cv2.minMaxLoc(res)
+            
+            if max_val > best_score:
+                best_score = max_val
+                best_match = suit
+                
         if return_score:
             if best_score > 0.35:
                 return best_match, best_score
