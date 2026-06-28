@@ -35,6 +35,12 @@ class BridgeAnalyzer:
             if os.path.exists(path):
                 self.suit_templates[suit] = cv2.imread(path, cv2.IMREAD_GRAYSCALE)
 
+        self.bid_suit_templates = {}
+        for suit in ["spade", "heart", "diamond", "club"]:
+            path = os.path.join(self.templates_dir, f"bid_{suit}.png")
+            if os.path.exists(path):
+                self.bid_suit_templates[suit] = cv2.imread(path, cv2.IMREAD_GRAYSCALE)
+
         if self.suit_templates and self.verbose:
             print(f"Loaded {len(self.suit_templates)} suit templates.")
 
@@ -702,9 +708,8 @@ class BridgeAnalyzer:
 
     def _extract_bids_paddle(self, bidding_img, fx=4.0, with_bboxes=False):
         """Extract bids using PaddleOCR for text detection."""
-        # Preprocess and upscale image by fx (default 4.0) for high OCR recall
-        processed = self.preprocess_for_ocr(bidding_img, fx=fx, thresh_val=None)
-        processed_bgr = cv2.cvtColor(processed, cv2.COLOR_GRAY2BGR)
+        # Upscale color image directly for high OCR recall
+        processed_bgr = cv2.resize(bidding_img, (0, 0), fx=fx, fy=fx, interpolation=cv2.INTER_CUBIC)
 
         detections = paddle_ocr_positions(processed_bgr, min_confidence=0.3)
 
@@ -796,50 +801,49 @@ class BridgeAnalyzer:
             if len(std_text) >= 1 and std_text[0] in "1234567" and std_text[1:] != "NT":
                 has_valid_ocr_suit = (len(std_text) == 2 and std_text[1] in ("S", "H", "D", "C"))
                 
-                x1 = int(cx - w / 2)
-                y1 = int(cy - h / 2)
-                x2 = int(cx + w / 2)
-                min_w = int(h * 1.2)
-                if (x2 - x1) < min_w:
-                    x2 = x1 + min_w
-                y2 = int(cy + h / 2)
+                # Precise grid-relative suit cropping: the suit symbol is centered at col_centers[closest_idx] + 4.6
+                scx = int(col_centers[closest_idx] + 4.6)
+                scy = int(cy)
+                
+                x1 = scx - 6
+                y1 = scy - 6
+                x2 = scx + 7
+                y2 = scy + 7
+                
                 x1 = max(0, min(x1, bidding_img.shape[1] - 1))
                 y1 = max(0, min(y1, bidding_img.shape[0] - 1))
                 x2 = max(0, min(x2, bidding_img.shape[1]))
                 y2 = max(0, min(y2, bidding_img.shape[0]))
                 
                 if x2 > x1 and y2 > y1:
-                    word_crop = bidding_img[y1:y2, x1:x2]
-                    suit_w = int(word_crop.shape[1] * 0.6)
-                    if suit_w > 0:
-                        suit_crop = word_crop[:, word_crop.shape[1] - suit_w:]
-                        suit, score = self.classify_bid_suit(suit_crop, return_score=True)
+                    suit_crop = bidding_img[y1:y2, x1:x2]
+                    suit, score = self.classify_bid_suit(suit_crop, return_score=True)
                         
-                        should_override = False
-                        resolved_suit = None
-                        
-                        if has_valid_ocr_suit:
-                            if suit and score > 0.60:
-                                should_override = True
-                                resolved_suit = suit
+                    should_override = False
+                    resolved_suit = None
+                    
+                    if has_valid_ocr_suit:
+                        if suit and score > 0.60:
+                            should_override = True
+                            resolved_suit = suit
+                    else:
+                        if suit:
+                            should_override = True
+                            resolved_suit = suit
                         else:
-                            if suit:
+                            fallback_suit = self.classify_suit_by_color_shape(suit_crop)
+                            if fallback_suit in ("spade", "heart", "diamond", "club"):
                                 should_override = True
-                                resolved_suit = suit
-                            else:
-                                fallback_suit = self.classify_suit_by_color_shape(suit_crop)
-                                if fallback_suit in ("spade", "heart", "diamond", "club"):
-                                    should_override = True
-                                    resolved_suit = fallback_suit
-                                    
-                        if should_override and resolved_suit in ("spade", "heart", "diamond", "club"):
-                            suit_map = {
-                                "spade": "S",
-                                "heart": "H",
-                                "diamond": "D",
-                                "club": "C"
-                            }
-                            std_text = f"{std_text[0]}{suit_map[resolved_suit]}"
+                                resolved_suit = fallback_suit
+                                
+                    if should_override and resolved_suit in ("spade", "heart", "diamond", "club"):
+                        suit_map = {
+                            "spade": "S",
+                            "heart": "H",
+                            "diamond": "D",
+                            "club": "C"
+                        }
+                        std_text = f"{std_text[0]}{suit_map[resolved_suit]}"
             print(f"  [PaddleOCR Bid OCR] Raw text: '{text}' -> Standardized: '{std_text}'", flush=True)
 
             bid_pattern = re.compile(
@@ -1166,7 +1170,8 @@ class BridgeAnalyzer:
         Dedicated scale-invariant suit classification for bidding table crops.
         Resizes the crop to match template scale for high-accuracy matching.
         """
-        if not self.suit_templates:
+        templates = self.bid_suit_templates if getattr(self, "bid_suit_templates", None) else self.suit_templates
+        if not templates:
             if return_score:
                 return None, -1.0
             return None
@@ -1192,7 +1197,7 @@ class BridgeAnalyzer:
         best_score = -1.0
         
         for suit in allowed_suits:
-            template = self.suit_templates.get(suit)
+            template = templates.get(suit)
             if template is None:
                 continue
                 
