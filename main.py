@@ -82,6 +82,40 @@ class RegionDeltaDetector:
         if gray is None:
             return True
 
+        if key == "trick":
+            h, w = gray.shape[:2]
+            rois = {
+                "trick_W": gray[int(h*0.30):int(h*0.70), int(w*0.15):int(w*0.45)],
+                "trick_E": gray[int(h*0.30):int(h*0.70), int(w*0.55):int(w*0.85)],
+                "trick_N": gray[int(h*0.10):int(h*0.45), int(w*0.35):int(w*0.65)],
+                "trick_S": gray[int(h*0.55):int(h*0.90), int(w*0.35):int(w*0.65)]
+            }
+            
+            any_changed = False
+            for r_key, r_gray in rois.items():
+                prev_r = self._prev_gray.get(r_key)
+                self._prev_gray[r_key] = r_gray.copy()
+                
+                if prev_r is None or prev_r.shape != r_gray.shape:
+                    any_changed = True
+                else:
+                    diff = cv2.absdiff(prev_r, r_gray)
+                    changed_pixels = np.sum(diff > self.change_threshold)
+                    total_pixels = diff.size
+                    change_pct = (changed_pixels / total_pixels) * 100
+                    if change_pct >= self.min_change_pct:
+                        any_changed = True
+            
+            if any_changed:
+                self.counter += 1
+                try:
+                    import os
+                    os.makedirs("debug", exist_ok=True)
+                    cv2.imwrite(f"debug/delta_{self.counter:03d}_{key}.png", img)
+                except Exception:
+                    pass
+            return any_changed
+
         prev = self._prev_gray.get(key)
         self._prev_gray[key] = gray.copy()
 
@@ -114,7 +148,11 @@ class RegionDeltaDetector:
             self._prev_gray.clear()
             self.counter = 0
         else:
-            self._prev_gray.pop(key, None)
+            if key == "trick":
+                for r_key in ["trick_W", "trick_E", "trick_N", "trick_S"]:
+                    self._prev_gray.pop(r_key, None)
+            else:
+                self._prev_gray.pop(key, None)
 
 # Setup instant SIGINT handler to ensure prompt Control-C termination
 def setup_signal_handler():
