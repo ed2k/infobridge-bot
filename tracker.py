@@ -98,21 +98,28 @@ class GameTracker:
                 poll_trick[seat] = pbn_card
 
         if not poll_trick:
-            # Trick area is empty. If we had cards in current_trick, finalize it!
-            if any(val is not None for val in self.current_trick.values()):
+            # Trick area is empty. If we had 4 cards in current_trick, finalize it!
+            num_cards = sum(1 for v in self.current_trick.values() if v is not None)
+            if num_cards == 4:
                 self.finalize_current_trick()
             return
 
         # Check for transitions:
         # 1. A seat already has a card in current_trick, but is playing again (conflict)
-        # 2. The number of played cards decreased (meaning the trick cleared and a new one started)
+        # 2. The number of played cards decreased because a new trick started (count_decreased and has_new_card)
         conflict = any(
             self.current_trick[seat] is not None and self.current_trick[seat] != card
             for seat, card in poll_trick.items()
         )
+        
+        has_new_card = any(
+            self.current_trick[seat] is None or self.current_trick[seat] != card
+            for seat, card in poll_trick.items()
+        )
+        
         count_decreased = sum(1 for v in poll_trick.values() if v is not None) < sum(1 for v in self.current_trick.values() if v is not None)
 
-        if conflict or count_decreased:
+        if conflict or (count_decreased and has_new_card):
             self.finalize_current_trick()
 
         # Update current trick state with the new card observations

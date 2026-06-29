@@ -241,34 +241,41 @@ class DetectionTaskQueue:
     def __init__(self):
         self.lock = threading.Lock()
         self.condition = threading.Condition(self.lock)
-        self.tasks = {}
-        self.order = []
+        self.tasks = []  # List of tuples: (region_key, img)
         self.stopped = False
         
     def put(self, region_key, img):
         with self.lock:
             if self.stopped:
                 return
-            if region_key not in self.tasks:
-                self.order.append(region_key)
-            self.tasks[region_key] = img
+            # Deduplicate for non-trick keys: update in-place if key exists
+            if region_key != "trick":
+                found = False
+                for idx, (k, _) in enumerate(self.tasks):
+                    if k == region_key:
+                        self.tasks[idx] = (region_key, img)
+                        found = True
+                        break
+                if not found:
+                    self.tasks.append((region_key, img))
+            else:
+                # "trick" tasks are never deduplicated and are always appended to the backlog
+                self.tasks.append((region_key, img))
             self.condition.notify()
             
     def get(self, timeout=1.0):
         with self.lock:
-            while not self.order and not self.stopped:
+            while not self.tasks and not self.stopped:
                 if not self.condition.wait(timeout=timeout):
                     return None, None
             if self.stopped:
                 return None, None
-            region_key = self.order.pop(0)
-            img = self.tasks.pop(region_key)
-            return region_key, img
+            return self.tasks.pop(0)
             
     def empty(self):
         with self.lock:
-            return len(self.order) == 0
-
+            return len(self.tasks) == 0
+            
     def stop(self):
         with self.lock:
             self.stopped = True
@@ -277,7 +284,6 @@ class DetectionTaskQueue:
     def clear(self):
         with self.lock:
             self.tasks.clear()
-            self.order.clear()
 
 def detection_worker_loop(queue, state, analyzer, stop_event):
     while not stop_event.is_set():
